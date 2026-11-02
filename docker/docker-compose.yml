@@ -1,0 +1,74 @@
+services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: Europe/Sofia
+    # Intel Quick Sync (i5-1235U iGPU) for hardware transcoding
+    devices:
+      - /dev/dri:/dev/dri
+    ports:
+      - 8096:8096
+    volumes:
+      - /volume1/ServerConfigurations/Jellyfin:/config
+      - /volume1/Movies1:/movies1
+      - /volume2/Movies2:/movies2
+      - /volume3/Movies3:/movies3
+      - /volume5/MoviesAdult:/moviesadult
+
+  jellyfin-tpdb-match:
+    build: ./jellyfin-tpdb-match
+    container_name: jellyfin-tpdb-match
+    restart: unless-stopped
+    depends_on:
+      - jellyfin
+    environment:
+      JELLYFIN_URL: http://jellyfin:8096
+      # Admin API key; the ThePornDB token is read from the plugin's own configuration
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/.env}
+      LIBRARY: Порно
+
+  calibre-web:
+    build: ./calibre-web
+    container_name: calibre-web
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      # UGOS share ACLs grant access via dani_yord83's primary group "admin", not the owner uid
+      PGID: 10
+      TZ: Etc/UTC
+      # calibredb/ebook-convert for bulk imports and format conversion
+      DOCKER_MODS: linuxserver/mods:universal-calibre
+    ports:
+      - 8083:8083
+    volumes:
+      - /volume1/ServerConfigurations/CalibreWeb:/config
+      - /volume1/Common/Other/Books/Calibre:/books
+      - /volume1/Common/Other/Books/Ingest:/ingest
+      - /volume1/Common/Other/Books/Ingest-Boardgames:/ingest-boardgames
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: nas
+    restart: unless-stopped
+    # Host networking exposes every NAS port (UGOS UI, Jellyfin, Calibre-Web) on the tailnet
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      # Only needed for the first login; the node key is kept in TS_STATE_DIR afterwards
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_HOSTNAME: nas
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+      # Keep UGOS's own DNS settings untouched
+      TS_ACCEPT_DNS: "false"
+    volumes:
+      - /volume1/ServerConfigurations/Tailscale:/var/lib/tailscale

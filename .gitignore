@@ -1,1 +1,4 @@
 .serena
+
+# Compose secrets (TS_AUTHKEY, JELLYFIN_API_KEY)
+docker/.env

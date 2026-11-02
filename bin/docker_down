@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+cd "$(dirname "$0")/../docker" || exit
+
+# The stack runs on the NAS's own docker daemon, reached over ssh (Host nas in linux_settings' settings/ssh/config)
+export DOCKER_HOST=ssh://nas
+
+docker compose down

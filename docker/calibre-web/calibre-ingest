@@ -1,0 +1,45 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+# Adds files dropped into the ingest folders to the library. Board game rulebooks have no
+# meaningful author for Calibre to pick up, so they get a placeholder one.
+
+shopt -s nullglob
+
+# Skips files still being copied in over SMB
+ready() {
+	[ -f "$1" ] && (($(date +%s) - $(stat -c %Y "$1") >= 60))
+}
+
+# add <file> [calibredb add options...]
+add() {
+	local file=$1 dir
+	shift
+	dir=$(dirname "$file")
+	if HOME=/config s6-setuidgid abc calibredb add --with-library /books "$@" "$file"; then
+		rm -f "$file"
+		added=true
+	else
+		mkdir -p "$dir/failed"
+		mv "$file" "$dir/failed/"
+	fi
+}
+
+while true; do
+	added=false
+
+	for file in /ingest/*; do
+		ready "$file" && add "$file"
+	done
+
+	for file in /ingest-boardgames/*; do
+		name=$(basename "$file")
+		ready "$file" && add "$file" --title "${name%.*}" --authors "Настолни игри" --tags "настолна игра"
+	done
+
+	# Calibre-Web doesn't notice books added by calibredb until it restarts
+	if $added; then
+		s6-svc -r /run/service/svc-calibre-web
+	fi
+
+	sleep 60
+done

@@ -4,12 +4,12 @@ Services running on the UGREEN NAS (`192.168.0.148`, tailnet `nas`), driven from
 
 ## Docker stack
 
-The compose stack lives in `docker/`. It runs on the NAS's own Docker daemon and is driven from the PC over SSH; the scripts in `bin` set `DOCKER_HOST=ssh://nas`:
+The compose stack lives in `docker/`. It runs on the NAS's own Docker daemon and is driven from the PC over SSH; the root `Makefile` sets `DOCKER_HOST=ssh://nas`:
 
 ```bash
-bin/docker_reinstall          # build + up -d --remove-orphans
-bin/docker_reinstall --hard   # also pull, prune images, restart
-bin/docker_down
+make up     # build + up -d --remove-orphans (default target)
+make hard   # also pull, prune images, restart
+make down
 
 # Single service:
 cd docker && DOCKER_HOST=ssh://nas docker compose up -d calibre-web

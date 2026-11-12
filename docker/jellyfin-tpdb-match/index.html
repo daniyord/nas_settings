@@ -18,6 +18,7 @@
   --skipped: #ec835a;
   --locked: #898781;
   --pending: #c3c2b7;
+  --duplicate: #fab219;
   --error: #d03b3b;
 }
 @media (prefers-color-scheme: dark) {
@@ -161,6 +162,7 @@ const STATES = [
   { key: "skipped", label: "Без match", icon: "✕" },
   { key: "locked", label: "Заключени", icon: "■" },
   { key: "pending", label: "Чакащи", icon: "…" },
+  { key: "duplicate", label: "Дубликати", icon: "⧉" },
   { key: "ignored", label: "Извън студио", icon: "–" },
 ];
 const CHART_STATES = STATES.filter(s => s.key !== "ignored");
@@ -179,7 +181,7 @@ const MATCHED_BY = {
   title: "по заглавие", keywords: "по ключови думи", link: "по линк", tag: "по таг в папката",
   plugin: "от plugin-а", unknown: "преди историята",
 };
-const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит" };
+const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат" };
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -222,7 +224,7 @@ function renderTiles(counts) {
     el("div", { className: "label", textContent: "Общо" }),
     el("div", { className: "value", textContent: total }))];
   for (const s of STATES) {
-    if (s.key === "ignored" && !counts.ignored) continue;
+    if ((s.key === "ignored" || s.key === "duplicate") && !counts[s.key]) continue;
     const pct = total ? Math.round(counts[s.key] / total * 100) : 0;
     tiles.push(el("div", { className: "tile" },
       el("div", { className: "label" }, swatch(s.key), `${s.icon} ${s.label}`),
@@ -242,7 +244,7 @@ function renderChart() {
     if (!studios.has(item.studio)) studios.set(item.studio, countStates([]));
     studios.get(item.studio)[item.state]++;
   }
-  const open = c => c.skipped + c.locked + c.pending;
+  const open = c => c.skipped + c.locked + c.pending + c.duplicate;
   const sum = c => open(c) + c.matched;
   const sorted = [...studios].sort((a, b) => open(b[1]) - open(a[1]) || sum(b[1]) - sum(a[1]) || a[0].localeCompare(b[0]));
   const shown = showAllStudios ? sorted : sorted.slice(0, STUDIO_LIMIT);

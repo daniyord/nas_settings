@@ -324,6 +324,19 @@ def organize(item, parts, label):
     event(new_path, "moved", f"{os.path.relpath(target, os.path.dirname(folder) if len(parts) == 2 else os.path.dirname(os.path.dirname(folder)))}/", label)
 
 
+# Video file name (lowercased) -> its path, for the movies of a studio already in their own tagged folder
+def tagged_files(studio_dir, cache):
+    if studio_dir not in cache:
+        cache[studio_dir] = {}
+        for folder in os.listdir(studio_dir):
+            path = os.path.join(studio_dir, folder)
+            if ID_TAG.search(folder) and os.path.isdir(path):
+                for name in os.listdir(path):
+                    if os.path.splitext(name)[1].lower() in VIDEO_EXTS:
+                        cache[studio_dir][name.lower()] = os.path.join(path, name)
+    return cache[studio_dir]
+
+
 def record(item, studio, name, state, detail, candidates=()):
     with lock:
         status[item["Id"]] = {
@@ -350,6 +363,7 @@ def run_once():
     todo = []
     next_wake = float("inf")
     stale = float("inf")
+    filenames = {}
     for item in items:
         location = next((l for l in library["Locations"] if item["Path"].startswith(l.rstrip("/") + "/")), None)
         parts = item["Path"][len(location.rstrip("/")) + 1:].split("/") if location else []
@@ -364,6 +378,17 @@ def run_once():
             record(item, studio, name, "pending", "waiting for Jellyfin to pick up the move")
             stale = min(stale, missing_since.setdefault(item["Id"], time.time()))
             continue
+        # A file copied in again next to the folder its earlier copy was moved into would be matched and moved as
+        # a second movie; the copy in the tagged folder is the original, so only the other one is flagged
+        if not (len(parts) == 3 and ID_TAG.search(parts[1])):
+            original = tagged_files(os.path.join(location, studio), filenames).get(parts[-1].lower())
+            if original:
+                same = os.path.getsize(item["Path"]) == os.path.getsize(original)
+                detail = f"same file as {os.path.relpath(original, location)}" + ("" if same else " (different size)")
+                if current_state(item["Id"]) != "duplicate":
+                    event(item["Path"], "duplicate", detail, label)
+                record(item, studio, name, "duplicate", detail)
+                continue
         # ctime rather than mtime: copy tools restore the source's mtime, but every write moves ctime. A file still
         # being copied reports a short runtime, and moving it would pull it from under the copy
         settles = os.stat(item["Path"]).st_ctime + SETTLE_AFTER

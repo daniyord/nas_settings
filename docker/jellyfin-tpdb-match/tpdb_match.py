@@ -4,11 +4,14 @@
 # pointed at the right ThePornDB id. Items that can't be matched with confidence are logged
 # and left alone; locked items are never touched. A status page on PORT shows what was matched
 # and takes per-item keywords (extra titles to search and compare) to retry a failed item with.
+# What can't be rebuilt from Jellyfin (when and how a movie was matched, skips, keywords and the
+# history of every action) lives in a SQLite database in DATA_DIR.
 
 import difflib
 import json
 import os
 import re
+import sqlite3
 import threading
 import time
 import urllib.error
@@ -25,7 +28,7 @@ JELLYFIN_API_KEY = os.environ["JELLYFIN_API_KEY"]
 LIBRARY = os.environ.get("LIBRARY", "Порно")
 INTERVAL = int(os.environ.get("INTERVAL", "300"))
 PORT = int(os.environ.get("PORT", "8097"))
-KEYWORDS_FILE = os.path.join(os.environ.get("DATA_DIR", "/data"), "keywords.json")
+DATA_DIR = os.environ.get("DATA_DIR", "/data")
 # ThePornDB names a studio's sites differently ("Wicked", "Wicked Pictures", ...); these collapse to one name
 MERGE_STUDIOS = [s.strip() for s in os.environ.get("MERGE_STUDIOS", "").split(",") if s.strip()]
 RETRY_AFTER = 24 * 3600
@@ -33,6 +36,10 @@ MIN_SIMILARITY = 0.9
 MAX_RUNTIME_OFF_MINUTES = 15
 # Gives the plugin's refresh time to write the NFO and artwork next to the file before it is moved
 ORGANIZE_AFTER = 120
+# A movie costs 10-20 ThePornDB requests; capping a run keeps a large import from holding up the
+# moves and studio merges of the rest of the library, the next run starts right away
+MAX_LOOKUPS_PER_RUN = 20
+STALE_RESCAN = 300
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 # Like Jellyfin's [imdbid-tt...]: a ThePornDB id in a file or folder name pins the match, no search involved
 ID_TAG = re.compile(r"\s*\[tpdbid-(" + UUID + r")\]", re.I)
@@ -40,39 +47,97 @@ ID_TAG = re.compile(r"\s*\[tpdbid-(" + UUID + r")\]", re.I)
 TPDB_REF = re.compile(r"(?:https?://)?(?:www\.)?theporndb\.net/movies/([\w-]+)/?|(" + UUID + ")", re.I)
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".mpg", ".mpeg", ".ts", ".webm"}
 
-skipped = {}
-matched_at = {}
+# In memory only: rebuilt from Jellyfin and the database on every run
 status = {}
+seen_matched_at = {}
+missing_since = {}
+last_rescan = [0.0]
+priority = set()
 lock = threading.RLock()
 wake = threading.Event()
-last_run = {"started": None, "finished": None, "error": None, "interval": INTERVAL}
+last_run = {"started": None, "finished": None, "error": None, "interval": INTERVAL, "queued": 0}
+
+os.makedirs(DATA_DIR, exist_ok=True)
+db = sqlite3.connect(os.path.join(DATA_DIR, "state.db"), check_same_thread=False, isolation_level=None)
+db.row_factory = sqlite3.Row
+db.executescript("""
+PRAGMA journal_mode = WAL;
+-- Keyed by file path rather than Jellyfin item id: moving a movie gives it a new item id
+CREATE TABLE IF NOT EXISTS movies (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    keywords TEXT NOT NULL DEFAULT '[]',
+    tpdb_id TEXT,
+    matched_at REAL,
+    matched_by TEXT,
+    skipped_at REAL,
+    skip_reason TEXT,
+    candidates TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    movie_id INTEGER NOT NULL REFERENCES movies(id),
+    at REAL NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_movie ON events(movie_id, at);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+""")
 
 
-def load_keywords():
-    try:
-        with open(KEYWORDS_FILE) as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+def meta(key, value=None):
+    with lock:
+        if value is not None:
+            db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+        row = db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row and row["value"]
 
 
-# Keyed by file path rather than item id, so keywords survive the item being re-added to the library
-keywords_by_path = load_keywords()
+def movie(path):
+    with lock:
+        db.execute("INSERT OR IGNORE INTO movies (path) VALUES (?)", (path,))
+        return db.execute("SELECT * FROM movies WHERE path = ?", (path,)).fetchone()
 
 
-def save_keywords():
-    os.makedirs(os.path.dirname(KEYWORDS_FILE), exist_ok=True)
-    with open(KEYWORDS_FILE + ".tmp", "w") as f:
-        json.dump(keywords_by_path, f, ensure_ascii=False, indent=1)
-    os.replace(KEYWORDS_FILE + ".tmp", KEYWORDS_FILE)
+def update_movie(path, **fields):
+    with lock:
+        movie(path)
+        db.execute(f"UPDATE movies SET {', '.join(f'{k} = ?' for k in fields)} WHERE path = ?", (*fields.values(), path))
+
+
+def event(path, kind, detail, label):
+    print(f"{kind} {label}: {detail}", flush=True)
+    with lock:
+        db.execute("INSERT INTO events (movie_id, at, kind, detail) VALUES (?, ?, ?, ?)", (movie(path)["id"], time.time(), kind, detail))
+
+
+def import_keywords_json():
+    path = os.path.join(DATA_DIR, "keywords.json")
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for movie_path, keywords in json.load(f).items():
+            update_movie(movie_path, keywords=json.dumps(keywords, ensure_ascii=False))
+    os.replace(path, path + ".imported")
+
+
+import_keywords_json()
 
 
 def request(url, headers, method="GET", body=None):
     data = None if body is None else json.dumps(body).encode()
     headers = {**headers, "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "jellyfin-tpdb-match"}
-    with urllib.request.urlopen(urllib.request.Request(url, data, headers, method=method), timeout=60) as response:
-        raw = response.read()
-    return json.loads(raw) if raw else None
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, data, headers, method=method), timeout=60) as response:
+                raw = response.read()
+            return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 502, 503, 504) or attempt == 5:
+                raise
+            retry_after = e.headers.get("Retry-After", "")
+            time.sleep(int(retry_after) if retry_after.isdigit() else 2 ** attempt * 5)
 
 
 def jellyfin(path, method="GET", body=None, **params):
@@ -103,11 +168,16 @@ def same_studio(folder, name):
     return bool(a and b) and (b.startswith(a) or a.startswith(b))
 
 
-def find_match(token, title, studio, year, minutes, keywords=()):
+def studio_sites(token, studio, cache):
+    if studio not in cache:
+        cache[studio] = {studio} | {s["name"] for s in tpdb(token, "sites", q=studio, per_page=50) if same_studio(studio, s["name"])}
+    return cache[studio]
+
+
+def find_match(token, title, studio, year, minutes, keywords, sites):
     # A keyword is compared on its own (a full alternative title) and appended to the file title
     # ("Cinderella" + "XXX Axel Braun Parody"), so either style of hint works
     texts = [title, *keywords] + ([f"{title} {' '.join(keywords)}"] if keywords else [])
-    sites = {studio} | {s["name"] for s in tpdb(token, "sites", q=studio, per_page=50) if same_studio(studio, s["name"])}
     found = {}
     for query in {title.replace(" - ", ": "), title.split(" - ")[0], *texts}:
         for params in [{"q": query, "site": site} for site in sites] + [{"q": query}]:
@@ -173,7 +243,7 @@ def merge_studios(item, admin, label):
     full["Studios"] = [{"Name": n} for n in merged]
     full["LockedFields"] = sorted(set(full.get("LockedFields") or []) | {"Studios"})
     jellyfin(f"/Items/{item['Id']}", "POST", full)
-    print(f"studios {label}: {', '.join(names)} -> {', '.join(merged)}", flush=True)
+    event(item["Path"], "studios", f"{', '.join(names)} -> {', '.join(merged)}", label)
 
 
 def sidecars(folder, stem):
@@ -243,20 +313,14 @@ def organize(item, parts, label):
         os.chmod(target, parent.st_mode & 0o7777)
     for src, dst in moves:
         os.rename(src, dst)
+    new_path = os.path.join(target, filename)
     with lock:
-        if len(parts) == 2:
-            moved = {item["Path"]: os.path.join(target, filename)} if item["Path"] in keywords_by_path else {}
-        else:
-            moved = {p: target + p[len(source):] for p in keywords_by_path if p.startswith(source + "/")}
-        for old, new in moved.items():
-            keywords_by_path[new] = keywords_by_path.pop(old)
-        if moved:
-            save_keywords()
+        db.execute("UPDATE OR REPLACE movies SET path = ? WHERE path = ?", (new_path, item["Path"]))
     jellyfin("/Library/Media/Updated", "POST", {"Updates": [
         {"Path": source, "UpdateType": "Deleted"},
         {"Path": target, "UpdateType": "Created"},
     ]})
-    print(f"organize {label} -> {os.path.basename(target)}/", flush=True)
+    event(new_path, "moved", f"{os.path.relpath(target, os.path.dirname(folder) if len(parts) == 2 else os.path.dirname(os.path.dirname(folder)))}/", label)
 
 
 def record(item, studio, name, state, detail, candidates=()):
@@ -277,11 +341,14 @@ def run_once():
     token = jellyfin(f"/Plugins/{plugin['Id']}/Configuration")["MetadataAPIToken"]
     admin = next(u for u in jellyfin("/Users") if u["Policy"]["IsAdministrator"])
     library = next(f for f in jellyfin("/Library/VirtualFolders") if f["Name"] == LIBRARY)
+    # Matches that existed before the database did can't be dated
+    backfill = not meta("history_since")
 
     items = jellyfin("/Items", ParentId=library["ItemId"], Recursive="true", IncludeItemTypes="Movie", Fields="Path,ProviderIds,Studios", Limit=100000)["Items"]
     # Classify everything first so the status page shows the whole library before the slow ThePornDB lookups
     todo = []
-    next_organize = float("inf")
+    next_wake = float("inf")
+    stale = float("inf")
     for item in items:
         location = next((l for l in library["Locations"] if item["Path"].startswith(l.rstrip("/") + "/")), None)
         parts = item["Path"][len(location.rstrip("/")) + 1:].split("/") if location else []
@@ -290,85 +357,124 @@ def run_once():
             continue
         studio = parts[0]
         name = ID_TAG.sub("", os.path.splitext(parts[-1])[0]).strip()
+        label = f"{studio}/{name}"
+        # Right after a move Jellyfin still lists the old path; acting on it would create a record for a file that's gone
+        if not os.path.isfile(item["Path"]):
+            record(item, studio, name, "pending", "waiting for Jellyfin to pick up the move")
+            stale = min(stale, missing_since.setdefault(item["Id"], time.time()))
+            continue
         tag = ID_TAG.search(item["Path"])
         provider = item.get("ProviderIds", {}).get("ThePornDB")
+        row = movie(item["Path"])
         # A tagged item is matched only once it points at the tagged id; retagging a folder re-points it
         if provider and (provider.lower() == f"movies/{tag.group(1).lower()}" if tag else any(same_studio(studio, s["Name"]) for s in item.get("Studios", []))):
+            if row["tpdb_id"] != provider:
+                if backfill:
+                    update_movie(item["Path"], tpdb_id=provider, matched_by="unknown", skipped_at=None)
+                else:
+                    update_movie(item["Path"], tpdb_id=provider, matched_at=time.time(), matched_by="plugin", skipped_at=None)
+                    event(item["Path"], "matched", f"{item['Name']} ({provider}, by the Jellyfin plugin)", label)
             if current_state(item["Id"]) != "matched":
                 record(item, studio, name, "matched", item["Name"])
-            merge_studios(item, admin, f"{studio}/{name}")
+            merge_studios(item, admin, label)
             # Counted from when this process first saw the item matched, as the plugin also identifies new
             # items on its own and is still writing their artwork right after
-            due = matched_at.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
+            due = seen_matched_at.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
             if time.time() > due:
-                organize(item, parts, f"{studio}/{name}")
+                organize(item, parts, label)
             elif len(parts) == 2 or (len(parts) == 3 and not ID_TAG.search(parts[1])):
-                next_organize = min(next_organize, due)
+                next_wake = min(next_wake, due)
             continue
-        if current_state(item["Id"]) not in ("skipped", "locked"):
+        if row["skipped_at"] and time.time() - row["skipped_at"] < RETRY_AFTER:
+            if current_state(item["Id"]) != "skipped":
+                record(item, studio, name, "skipped", row["skip_reason"], json.loads(row["candidates"]))
+            continue
+        if current_state(item["Id"]) != "locked":
             record(item, studio, name, "pending", "waiting for the matcher")
-        todo.append((item, studio, name, tag))
+        todo.append((item, studio, name, label, tag))
 
+    if backfill:
+        meta("history_since", str(time.time()))
+    # Jellyfin sometimes keeps a moved movie at its old path, showing artwork that's gone, until the library is rescanned
+    for gone in set(missing_since) - {item["Id"] for item in items if not os.path.isfile(item["Path"])}:
+        del missing_since[gone]
+    if time.time() - stale > STALE_RESCAN and time.time() - last_rescan[0] > STALE_RESCAN:
+        last_rescan[0] = time.time()
+        print("rescan: Jellyfin still lists moved files at their old paths", flush=True)
+        jellyfin(f"/Items/{library['ItemId']}/Refresh", "POST", Recursive="true", MetadataRefreshMode="Default", ImageRefreshMode="Default")
+    if stale < float("inf"):
+        next_wake = min(next_wake, max(stale, last_rescan[0]) + STALE_RESCAN)
     with lock:
         for gone in set(status) - {item["Id"] for item in items}:
             del status[gone]
 
-    for item, studio, name, tag in todo:
-        if time.time() - skipped.get(item["Id"], 0) < RETRY_AFTER:
-            continue
-
+    sites_cache = {}
+    lookups = 0
+    # Movies retried from the status page go first, ahead of a large import
+    todo.sort(key=lambda t: t[0]["Path"] not in priority)
+    last_run["queued"] = len(todo)
+    for n, (item, studio, name, label, tag) in enumerate(todo):
+        last_run["queued"] = len(todo) - n
         full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
         if full.get("LockData"):
             record(item, studio, name, "locked", "metadata is locked in Jellyfin")
             continue
+        if lookups == MAX_LOOKUPS_PER_RUN:
+            return time.time()
+        lookups += 1
+        priority.discard(item["Path"])
 
         year_match = re.search(r"\((\d{4})\)\s*$", name)
         year = int(year_match.group(1)) if year_match else None
         title = re.sub(r"\s*\(\d{4}\)\s*$", "", name)
         minutes = (full.get("RunTimeTicks") or 0) / 600_000_000
-        with lock:
-            keywords = list(keywords_by_path.get(item["Path"], []))
+        keywords = json.loads(movie(item["Path"])["keywords"])
 
         refs = [m.group(1) or m.group(2) for k in keywords if (m := TPDB_REF.fullmatch(k.strip()))]
-        ref = tag.group(1) if tag else (refs[0] if refs else None)
-        if ref:
-            movie, reason, candidates = tpdb_movie(token, ref), None, []
-            if not movie:
+        if tag or refs:
+            ref = tag.group(1) if tag else refs[0]
+            matched_by = "tag" if tag else "link"
+            found, reason, candidates = tpdb_movie(token, ref), None, []
+            if not found:
                 reason = f"ThePornDB has no movie {ref}"
         else:
-            movie, reason, candidates = find_match(token, title, studio, year, minutes, keywords)
-        if not movie:
-            print(f"skip {studio}/{name}: {reason}", flush=True)
-            skipped[item["Id"]] = time.time()
+            matched_by = "keywords" if keywords else "title"
+            found, reason, candidates = find_match(token, title, studio, year, minutes, keywords, studio_sites(token, studio, sites_cache))
+        if not found:
+            update_movie(item["Path"], skipped_at=time.time(), skip_reason=reason, candidates=json.dumps(candidates, ensure_ascii=False))
+            event(item["Path"], "skipped", reason, label)
             record(item, studio, name, "skipped", reason, candidates)
             continue
 
-        full["ProviderIds"] = {"ThePornDB": f"movies/{movie['id']}"}
+        provider = f"movies/{found['id']}"
+        full["ProviderIds"] = {"ThePornDB": provider}
         jellyfin(f"/Items/{item['Id']}", "POST", full)
         jellyfin(f"/Items/{item['Id']}/Refresh", "POST", MetadataRefreshMode="FullRefresh", ImageRefreshMode="FullRefresh", ReplaceAllMetadata="true", ReplaceAllImages="true")
-        match = f"{movie['title']} ({movie['site']['name']}, {(movie.get('date') or '')[:4]})"
-        print(f"matched {studio}/{name} -> {match}", flush=True)
-        matched_at[item["Id"]] = time.time()
-        next_organize = min(next_organize, time.time() + ORGANIZE_AFTER)
+        match = f"{found['title']} ({found['site']['name']}, {(found.get('date') or '')[:4]})"
+        update_movie(item["Path"], tpdb_id=provider, matched_at=time.time(), matched_by=matched_by, skipped_at=None, skip_reason=None, candidates="[]")
+        event(item["Path"], "matched", f"{match} ({provider}, by {matched_by})", label)
+        seen_matched_at[item["Id"]] = time.time()
+        next_wake = min(next_wake, time.time() + ORGANIZE_AFTER)
         record(item, studio, name, "matched", match)
 
-    return next_organize
+    last_run["queued"] = 0
+    return next_wake
 
 
 def matcher_loop():
     while True:
         wake.clear()
         last_run["started"] = time.time()
-        next_organize = float("inf")
+        next_wake = float("inf")
         try:
-            next_organize = run_once()
+            next_wake = run_once()
             last_run["error"] = None
         except Exception as e:
             print(f"error: {e!r}", flush=True)
             last_run["error"] = repr(e)
         last_run["finished"] = time.time()
-        # Wake early for a movie waiting to be moved rather than leaving it for the next full interval
-        wake.wait(max(1, min(INTERVAL, next_organize - time.time() + 1)))
+        # Wake early for a movie waiting to be moved or a queue left over, rather than after a full interval
+        wake.wait(max(1, min(INTERVAL, next_wake - time.time() + 1)))
 
 
 app = FastAPI(title="jellyfin-tpdb-match")
@@ -386,8 +492,30 @@ def index():
 @app.get("/api/status")
 def api_status():
     with lock:
-        items = [{**s, "keywords": keywords_by_path.get(s["path"], [])} for s in status.values()]
+        rows = {r["path"]: r for r in db.execute("SELECT path, keywords, matched_at, matched_by FROM movies")}
+        items = []
+        for s in status.values():
+            row = rows.get(s["path"])
+            items.append({
+                **s,
+                "keywords": json.loads(row["keywords"]) if row else [],
+                "matched_at": row["matched_at"] if row and s["state"] == "matched" else None,
+                "matched_by": row["matched_by"] if row and s["state"] == "matched" else None,
+            })
     return {"run": last_run, "items": items}
+
+
+@app.get("/api/items/{item_id}/history")
+def history(item_id: str):
+    with lock:
+        entry = status.get(item_id)
+        if not entry:
+            raise HTTPException(404, "unknown item")
+        events = db.execute(
+            "SELECT e.at, e.kind, e.detail FROM events e JOIN movies m ON m.id = e.movie_id WHERE m.path = ? ORDER BY e.at DESC, e.id DESC",
+            (entry["path"],),
+        ).fetchall()
+    return [dict(e) for e in events]
 
 
 @app.post("/api/run")
@@ -405,13 +533,10 @@ def retry(item_id: str, body: Retry):
         if entry["state"] not in ("skipped", "pending"):
             raise HTTPException(409, f"item is {entry['state']}")
         keywords = [k.strip() for k in body.keywords if k.strip()]
-        if keywords:
-            keywords_by_path[entry["path"]] = keywords
-        else:
-            keywords_by_path.pop(entry["path"], None)
-        save_keywords()
-        skipped.pop(item_id, None)
+        update_movie(entry["path"], keywords=json.dumps(keywords, ensure_ascii=False), skipped_at=None)
+        event(entry["path"], "retry", "; ".join(keywords) or "no keywords", f"{entry['studio']}/{entry['file']}")
         entry.update(state="pending", detail="queued for retry", checked=time.time())
+        priority.add(entry["path"])
     wake.set()
     return {**entry, "keywords": keywords}
 

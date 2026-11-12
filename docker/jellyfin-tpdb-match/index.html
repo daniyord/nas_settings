@@ -109,6 +109,10 @@ td.time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabula
 td a { color: inherit; }
 .state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .empty { color: var(--muted); padding: 16px 8px; }
+button.link { border: none; background: none; padding: 0; color: var(--ink-2); text-decoration: underline; font-size: 13px; }
+td.history { background: var(--page); color: var(--ink-2); }
+td.history ul { margin: 0; padding-left: 18px; }
+td.history li { margin: 2px 0; }
 .cands { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; align-items: center; color: var(--muted); font-size: 13px; }
 .cands button { font-size: 13px; padding: 2px 8px; color: var(--ink-2); }
 .retry { display: flex; gap: 6px; margin-top: 6px; }
@@ -142,10 +146,11 @@ td a { color: inherit; }
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Студио</th><th>Файл</th><th>Състояние</th><th>Детайл</th><th>Проверено</th></tr></thead>
+        <thead><tr><th>Студио</th><th>Файл</th><th>Състояние</th><th>Детайл</th><th>Match-нат</th><th>Проверено</th></tr></thead>
         <tbody id="tbody"></tbody>
       </table>
     </div>
+    <button type="button" class="more" id="table-more" hidden></button>
   </section>
 </main>
 <div class="tooltip" id="tooltip"></div>
@@ -166,6 +171,15 @@ let data = { items: [], run: {} };
 let stateFilter = "all";
 let studioFilter = null;
 let showAllStudios = false;
+const PAGE = 100;
+let tableLimit = PAGE;
+const openHistory = new Set();
+const histories = new Map();
+const MATCHED_BY = {
+  title: "по заглавие", keywords: "по ключови думи", link: "по линк", tag: "по таг в папката",
+  plugin: "от plugin-а", unknown: "преди историята",
+};
+const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит" };
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -198,6 +212,7 @@ function renderRun() {
   node.append(running
     ? `Минаване в момента (от ${fmtTime(started)}).`
     : `Последно минаване: ${fmtTime(finished)} · на всеки ${Math.round(interval / 60)} мин.`);
+  if (data.run.queued) node.append(` · в опашката: ${data.run.queued}`);
   if (error) node.append(" ", el("span", { className: "err", textContent: `Грешка: ${error}` }));
 }
 
@@ -241,7 +256,7 @@ function renderChart() {
       seg.style.width = `${counts[s.key] / max * 100}%`;
       seg.style.background = `var(--${s.key})`;
       seg.dataset.tip = JSON.stringify([studio, `${s.icon} ${s.label}: ${counts[s.key]} от ${sum(counts)}`]);
-      seg.onclick = () => { studioFilter = studio; stateFilter = s.key; document.getElementById("search").value = ""; renderTable(); document.getElementById("tbody").scrollIntoView({ behavior: "smooth" }); };
+      seg.onclick = () => { studioFilter = studio; stateFilter = s.key; tableLimit = PAGE; document.getElementById("search").value = ""; renderTable(); document.getElementById("tbody").scrollIntoView({ behavior: "smooth" }); };
       track.append(seg);
     }
     return el("div", { className: "row" },
@@ -263,13 +278,13 @@ function renderFilters(counts) {
     if (o.key !== "all") b.append(swatch(o.key));
     b.append(`${o.label} (${o.count})`);
     b.setAttribute("aria-pressed", stateFilter === o.key);
-    b.onclick = () => { stateFilter = o.key; renderFilters(counts); renderTable(); };
+    b.onclick = () => { stateFilter = o.key; tableLimit = PAGE; renderFilters(counts); renderTable(); };
     return b;
   });
   if (studioFilter) {
     const b = el("button", { type: "button", textContent: `Студио: ${studioFilter} ✕` });
     b.setAttribute("aria-pressed", "true");
-    b.onclick = () => { studioFilter = null; renderFilters(counts); renderTable(); };
+    b.onclick = () => { studioFilter = null; tableLimit = PAGE; renderFilters(counts); renderTable(); };
     buttons.push(b);
   }
   document.getElementById("filters").replaceChildren(...buttons);
@@ -283,21 +298,55 @@ function renderTable() {
     .filter(i => stateFilter === "all" || i.state === stateFilter)
     .filter(i => !studioFilter || i.studio === studioFilter)
     .filter(i => !q || `${i.studio} ${i.file} ${i.detail}`.toLowerCase().includes(q))
-    .sort((a, b) => order[b.state] - order[a.state] || a.studio.localeCompare(b.studio) || a.file.localeCompare(b.file));
+    // Most recent matches first, so a large import's progress shows at the top
+    .sort((a, b) => order[b.state] - order[a.state] || (b.matched_at || 0) - (a.matched_at || 0)
+      || a.studio.localeCompare(b.studio) || a.file.localeCompare(b.file));
 
-  const rows = items.map(i => {
+  const rows = items.slice(0, tableLimit).flatMap(i => {
     const s = byKey[i.state] || { label: i.state, icon: "" };
     const detail = el("td", {}, i.detail);
     if (i.state === "skipped" || i.state === "pending") detail.append(...retryControls(i));
-    return el("tr", {},
+    const toggle = el("button", { type: "button", className: "link", textContent: openHistory.has(i.id) ? "Скрий историята" : "История" });
+    toggle.onclick = () => toggleHistory(i.id);
+    const matched = el("td", { className: "time" });
+    if (i.state === "matched") matched.append(fmtTime(i.matched_at), el("br"), MATCHED_BY[i.matched_by] || i.matched_by || "");
+    const row = el("tr", {},
       el("td", { textContent: i.studio }),
       el("td", {}, el("a", { href: jellyfinLink(i.id), target: "_blank", rel: "noopener", textContent: i.file })),
       el("td", {}, el("span", { className: "state" }, swatch(i.state), `${s.icon} ${s.label}`)),
       detail,
-      el("td", { className: "time", textContent: fmtTime(i.checked) }));
+      matched,
+      el("td", { className: "time" }, fmtTime(i.checked), el("br"), toggle));
+    return openHistory.has(i.id) ? [row, historyRow(i.id)] : [row];
   });
   document.getElementById("tbody").replaceChildren(...(rows.length ? rows
-    : [el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "Няма филми за този филтър." }))]));
+    : [el("tr", {}, el("td", { colSpan: 6, className: "empty", textContent: "Няма филми за този филтър." }))]));
+
+  const more = document.getElementById("table-more");
+  more.hidden = items.length <= tableLimit;
+  more.textContent = `Покажи още ${Math.min(PAGE, items.length - tableLimit)} от ${items.length - tableLimit}`;
+}
+
+function historyRow(id) {
+  const events = histories.get(id);
+  const cell = el("td", { colSpan: 6, className: "history" });
+  if (!events) cell.append("Зареждане…");
+  else if (!events.length) cell.append("Няма записани действия.");
+  else cell.append(el("ul", {}, ...events.map(e =>
+    el("li", {}, el("span", { className: "time", textContent: fmtTime(e.at) }), ` ${EVENT_KIND[e.kind] || e.kind}: ${e.detail}`))));
+  return el("tr", {}, cell);
+}
+
+async function toggleHistory(id) {
+  if (openHistory.delete(id)) { renderTable(); return; }
+  openHistory.add(id);
+  renderTable();
+  try {
+    histories.set(id, await (await fetch(`api/items/${encodeURIComponent(id)}/history`)).json());
+  } catch (e) {
+    histories.set(id, []);
+  }
+  renderTable();
 }
 
 // Unsent keyword edits survive the periodic re-render
@@ -365,6 +414,9 @@ async function refresh() {
     document.getElementById("run").textContent = `Няма връзка със сървъра: ${e}`;
     return;
   }
+  await Promise.all([...openHistory].map(async id => {
+    try { histories.set(id, await (await fetch(`api/items/${encodeURIComponent(id)}/history`)).json()); } catch (e) { }
+  }));
   renderRun();
   renderTiles(countStates(data.items));
   renderChart();
@@ -393,7 +445,8 @@ document.getElementById("run-now").onclick = async e => {
   }
 };
 document.getElementById("more").onclick = () => { showAllStudios = !showAllStudios; renderChart(); };
-document.getElementById("search").addEventListener("input", renderTable);
+document.getElementById("search").addEventListener("input", () => { tableLimit = PAGE; renderTable(); });
+document.getElementById("table-more").onclick = () => { tableLimit += PAGE; renderTable(); };
 
 refresh();
 setInterval(refresh, 30000);

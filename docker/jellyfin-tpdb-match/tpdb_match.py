@@ -40,6 +40,7 @@ ORGANIZE_AFTER = 120
 # moves and studio merges of the rest of the library, the next run starts right away
 MAX_LOOKUPS_PER_RUN = 20
 STALE_RESCAN = 300
+SETTLE_AFTER = 120
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 # Like Jellyfin's [imdbid-tt...]: a ThePornDB id in a file or folder name pins the match, no search involved
 ID_TAG = re.compile(r"\s*\[tpdbid-(" + UUID + r")\]", re.I)
@@ -362,6 +363,13 @@ def run_once():
         if not os.path.isfile(item["Path"]):
             record(item, studio, name, "pending", "waiting for Jellyfin to pick up the move")
             stale = min(stale, missing_since.setdefault(item["Id"], time.time()))
+            continue
+        # ctime rather than mtime: copy tools restore the source's mtime, but every write moves ctime. A file still
+        # being copied reports a short runtime, and moving it would pull it from under the copy
+        settles = os.stat(item["Path"]).st_ctime + SETTLE_AFTER
+        if time.time() < settles:
+            record(item, studio, name, "pending", "file is still being copied")
+            next_wake = min(next_wake, settles)
             continue
         tag = ID_TAG.search(item["Path"])
         provider = item.get("ProviderIds", {}).get("ThePornDB")

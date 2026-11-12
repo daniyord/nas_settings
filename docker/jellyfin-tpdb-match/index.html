@@ -107,6 +107,12 @@ td.time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabula
 td a { color: inherit; }
 .state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .empty { color: var(--muted); padding: 16px 8px; }
+.cands { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; align-items: center; color: var(--muted); font-size: 13px; }
+.cands button { font-size: 13px; padding: 2px 8px; color: var(--ink-2); }
+.retry { display: flex; gap: 6px; margin-top: 6px; }
+.retry input { min-width: 200px; padding: 4px 8px; }
+.retry button { white-space: nowrap; padding: 4px 10px; }
+.retry .msg { color: var(--error); font-size: 13px; align-self: center; }
 </style>
 </head>
 <body>
@@ -273,15 +279,75 @@ function renderTable() {
 
   const rows = items.map(i => {
     const s = byKey[i.state] || { label: i.state, icon: "" };
+    const detail = el("td", {}, i.detail);
+    if (i.state === "skipped" || i.state === "pending") detail.append(...retryControls(i));
     return el("tr", {},
       el("td", { textContent: i.studio }),
       el("td", {}, el("a", { href: jellyfinLink(i.id), target: "_blank", rel: "noopener", textContent: i.file })),
       el("td", {}, el("span", { className: "state" }, swatch(i.state), `${s.icon} ${s.label}`)),
-      el("td", { textContent: i.detail }),
+      detail,
       el("td", { className: "time", textContent: fmtTime(i.checked) }));
   });
   document.getElementById("tbody").replaceChildren(...(rows.length ? rows
     : [el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "Няма филми за този филтър." }))]));
+}
+
+// Unsent keyword edits survive the periodic re-render
+const drafts = new Map();
+const KEYWORD_SEP = ";";
+
+function retryControls(item) {
+  const input = el("input", {
+    type: "text",
+    value: drafts.get(item.id) ?? item.keywords.join(`${KEYWORD_SEP} `),
+    placeholder: "Ключови думи или точно заглавие, разделени с ;",
+  });
+  input.oninput = () => drafts.set(item.id, input.value);
+  const msg = el("span", { className: "msg" });
+  const button = el("button", { type: "button", textContent: "Опитай пак" });
+  const send = async () => {
+    button.disabled = true;
+    const keywords = input.value.split(KEYWORD_SEP).map(k => k.trim()).filter(Boolean);
+    try {
+      const res = await fetch(`api/items/${encodeURIComponent(item.id)}/retry`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keywords }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || res.status);
+      drafts.delete(item.id);
+      input.blur();
+      pollFast();
+    } catch (e) {
+      msg.textContent = `Грешка: ${e.message}`;
+      button.disabled = false;
+    }
+  };
+  button.onclick = send;
+  input.onkeydown = e => { if (e.key === "Enter") send(); };
+
+  const parts = [];
+  if (item.candidates?.length) {
+    parts.push(el("div", { className: "cands" }, "Най-близки:", ...item.candidates.map(c => {
+      const b = el("button", {
+        type: "button",
+        textContent: `${c.title} · ${c.site}${c.year ? `, ${c.year}` : ""}${c.minutes ? `, ${c.minutes} мин` : ""} · ${Math.round(c.similarity * 100)}%`,
+        title: "Използвай това заглавие като ключова дума",
+      });
+      b.onclick = () => { input.value = c.title; drafts.set(item.id, c.title); input.focus(); };
+      return b;
+    })));
+  }
+  parts.push(el("div", { className: "retry" }, input, button, msg));
+  return parts;
+}
+
+// Poll quickly for a minute after a retry so its result shows up without waiting for the 30s refresh
+let fastUntil = 0;
+function pollFast() {
+  const running = Date.now() < fastUntil;
+  fastUntil = Date.now() + 60000;
+  if (running) return;
+  const tick = () => { refresh(); if (Date.now() < fastUntil) setTimeout(tick, 3000); };
+  tick();
 }
 
 async function refresh() {
@@ -294,7 +360,8 @@ async function refresh() {
   renderRun();
   renderTiles(countStates(data.items));
   renderChart();
-  renderTable();
+  // Re-rendering would steal focus from a keyword field being typed into
+  if (!document.getElementById("tbody").contains(document.activeElement)) renderTable();
 }
 
 const tooltip = document.getElementById("tooltip");

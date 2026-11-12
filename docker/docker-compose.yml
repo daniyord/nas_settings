@@ -36,6 +36,11 @@ services:
       LIBRARY: Порно
       # Studios whose ThePornDB variants ("Wicked Pictures", ...) are merged into this one name
       MERGE_STUDIOS: Wicked
+    volumes:
+      # Per-file keywords entered on the status page
+      - /volume1/ServerConfigurations/JellyfinTpdbMatch:/data
+      # Same path as inside jellyfin, so item paths can be used as is; matched movies get their own folder
+      - /volume5/MoviesAdult/Porn:/moviesadult/Porn
 
   calibre-web:
     build: ./calibre-web

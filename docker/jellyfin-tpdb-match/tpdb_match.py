@@ -364,6 +364,12 @@ def api_status():
     return {"run": last_run, "items": items}
 
 
+@app.post("/api/run")
+def run_now():
+    wake.set()
+    return {"run": last_run}
+
+
 @app.post("/api/items/{item_id}/retry")
 def retry(item_id: str, body: Retry):
     with lock:

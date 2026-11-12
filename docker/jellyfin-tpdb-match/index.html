@@ -55,6 +55,8 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 h2 { font-size: 15px; margin: 0 0 12px; }
 .sub { color: var(--ink-2); margin: 0 0 20px; }
 .sub .err { color: var(--error); }
+.runbar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+.runbar .sub { margin: 0; }
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -118,7 +120,10 @@ td a { color: inherit; }
 <body>
 <main>
   <h1>Jellyfin ↔ ThePornDB</h1>
-  <p class="sub" id="run">Зареждане…</p>
+  <div class="runbar">
+    <p class="sub" id="run">Зареждане…</p>
+    <button type="button" id="run-now">Пусни сега</button>
+  </div>
 
   <div class="tiles" id="tiles"></div>
 
@@ -187,6 +192,9 @@ function renderRun() {
   node.replaceChildren();
   if (!started) { node.append("Първото минаване още не е започнало."); return; }
   const running = !finished || finished < started;
+  const button = document.getElementById("run-now");
+  button.disabled = running;
+  button.textContent = running ? "Върви…" : "Пусни сега";
   node.append(running
     ? `Минаване в момента (от ${fmtTime(started)}).`
     : `Последно минаване: ${fmtTime(finished)} · на всеки ${Math.round(interval / 60)} мин.`);
@@ -376,6 +384,14 @@ document.getElementById("rows").addEventListener("mousemove", e => {
   tooltip.style.top = `${e.clientY + 14}px`;
 });
 document.getElementById("rows").addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+document.getElementById("run-now").onclick = async e => {
+  e.target.disabled = true;
+  try {
+    await fetch("api/run", { method: "POST" });
+  } finally {
+    pollFast();
+  }
+};
 document.getElementById("more").onclick = () => { showAllStudios = !showAllStudios; renderChart(); };
 document.getElementById("search").addEventListener("input", renderTable);
 

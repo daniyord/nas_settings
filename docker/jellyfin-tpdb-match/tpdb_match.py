@@ -296,7 +296,9 @@ def run_once():
             if current_state(item["Id"]) != "matched":
                 record(item, studio, name, "matched", item["Name"])
             merge_studios(item, admin, f"{studio}/{name}")
-            if time.time() - matched_at.get(item["Id"], 0) > ORGANIZE_AFTER:
+            # Counted from when this process first saw the item matched, as the plugin also identifies new
+            # items on its own and is still writing their artwork right after
+            if time.time() - matched_at.setdefault(item["Id"], time.time()) > ORGANIZE_AFTER:
                 organize(item, parts, f"{studio}/{name}")
             continue
         if current_state(item["Id"]) not in ("skipped", "locked"):

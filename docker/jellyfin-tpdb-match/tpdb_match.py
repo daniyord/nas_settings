@@ -195,6 +195,20 @@ def sidecars(folder, stem):
     return result
 
 
+# Alone in its folder, Jellyfin reads and writes movie.nfo, folder.jpg, backdrop.jpg, ... rather than
+# <stem>.nfo, <stem>-poster.jpg, ...; keeping the old names would leave stale duplicates next to the new ones
+def folder_name(name, stem):
+    rest = name[len(stem):] if name.lower().startswith(stem.lower()) else None
+    if rest is None:
+        return name
+    if rest.lower() == ".nfo":
+        return "movie.nfo"
+    art = re.fullmatch(r"-(\w+)(\.\w+)", rest)
+    if art:
+        return ("folder" if art.group(1).lower() == "poster" else art.group(1).lower()) + art.group(2).lower()
+    return name
+
+
 # Gives a matched movie its own folder named "<Title (Year)> [tpdbid-<id>]": a movie lying directly in its
 # studio folder moves there with its sidecar files, a movie already alone in a folder has the tag appended
 def organize(item, parts, label):
@@ -209,7 +223,8 @@ def organize(item, parts, label):
         year = item.get("ProductionYear")
         base = stem if not year or re.search(r"\(\d{4}\)\s*$", stem) else f"{stem} ({year})"
         source, target = item["Path"], os.path.join(folder, f"{base} {tag}")
-        moves = [(os.path.join(folder, n), os.path.join(target, n)) for n in [filename, *sidecars(folder, stem)]]
+        moves = [(item["Path"], os.path.join(target, filename))]
+        moves += [(os.path.join(folder, n), os.path.join(target, folder_name(n, stem))) for n in sidecars(folder, stem)]
     elif len(parts) == 3 and not ID_TAG.search(parts[1]):
         if sum(os.path.splitext(n)[1].lower() in VIDEO_EXTS for n in os.listdir(folder)) != 1:
             return

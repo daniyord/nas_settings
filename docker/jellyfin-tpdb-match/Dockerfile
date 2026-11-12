@@ -1,5 +1,7 @@
 FROM python:3.13-alpine
 
-COPY tpdb_match.py /tpdb_match.py
+RUN pip install --no-cache-dir fastapi==0.115.12 uvicorn==0.34.2
 
-CMD ["python", "-u", "/tpdb_match.py"]
+COPY tpdb_match.py index.html /app/
+
+CMD ["python", "-u", "/app/tpdb_match.py"]

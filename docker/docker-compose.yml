@@ -27,11 +27,15 @@ services:
     restart: unless-stopped
     depends_on:
       - jellyfin
+    ports:
+      - 8097:8097
     environment:
       JELLYFIN_URL: http://jellyfin:8096
       # Admin API key; the ThePornDB token is read from the plugin's own configuration
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/.env}
       LIBRARY: Порно
+      # Studios whose ThePornDB variants ("Wicked Pictures", ...) are merged into this one name
+      MERGE_STUDIOS: Wicked
 
   calibre-web:
     build: ./calibre-web

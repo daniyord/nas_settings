@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TPDB Match</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --border: rgba(11, 11, 11, 0.10);
+  --matched: #0ca30c;
+  --skipped: #ec835a;
+  --locked: #898781;
+  --pending: #c3c2b7;
+  --error: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --grid: #2c2c2a;
+    --border: rgba(255, 255, 255, 0.10);
+    --pending: #52514e;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --grid: #2c2c2a;
+  --border: rgba(255, 255, 255, 0.10);
+  --pending: #52514e;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.sub { color: var(--ink-2); margin: 0 0 20px; }
+.sub .err { color: var(--error); }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.tile .label { color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+.tile .value { font-size: 26px; font-weight: 600; margin-top: 2px; }
+.tile .pct { color: var(--muted); font-size: 13px; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--ink-2); margin-bottom: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.rows { display: grid; gap: 6px; }
+.row { display: grid; grid-template-columns: minmax(90px, 200px) 1fr 44px; align-items: center; gap: 10px; }
+.row .name { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .total { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.track { display: flex; gap: 2px; height: 14px; }
+.seg { height: 100%; min-width: 3px; cursor: pointer; }
+.seg:last-child { border-radius: 0 4px 4px 0; }
+.seg:hover { filter: brightness(1.1); outline: 2px solid var(--surface); }
+.more { margin-top: 12px; }
+
+.tooltip {
+  position: fixed; pointer-events: none; z-index: 10;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 10px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: none; white-space: nowrap;
+}
+.tooltip b { display: block; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+button, input {
+  font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 10px;
+}
+button { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+button[aria-pressed="true"] { border-color: var(--ink-2); font-weight: 600; }
+input { flex: 1; min-width: 160px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; }
+td.time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td a { color: inherit; }
+.state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.empty { color: var(--muted); padding: 16px 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Jellyfin ↔ ThePornDB</h1>
+  <p class="sub" id="run">Зареждане…</p>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="card">
+    <h2>По студио</h2>
+    <div class="legend" id="legend"></div>
+    <div class="rows" id="rows"></div>
+    <button class="more" id="more" hidden></button>
+  </section>
+
+  <section class="card">
+    <h2>Филми</h2>
+    <div class="controls">
+      <span id="filters" style="display:flex;flex-wrap:wrap;gap:8px"></span>
+      <input id="search" type="search" placeholder="Търси студио или заглавие…">
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Студио</th><th>Файл</th><th>Състояние</th><th>Детайл</th><th>Проверено</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const STATES = [
+  { key: "matched", label: "Match-нати", icon: "✓" },
+  { key: "skipped", label: "Без match", icon: "✕" },
+  { key: "locked", label: "Заключени", icon: "■" },
+  { key: "pending", label: "Чакащи", icon: "…" },
+  { key: "ignored", label: "Извън студио", icon: "–" },
+];
+const CHART_STATES = STATES.filter(s => s.key !== "ignored");
+const STUDIO_LIMIT = 25;
+const byKey = Object.fromEntries(STATES.map(s => [s.key, s]));
+
+let data = { items: [], run: {} };
+let stateFilter = "all";
+let studioFilter = null;
+let showAllStudios = false;
+
+const el = (tag, props = {}, ...children) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of children) node.append(child);
+  return node;
+};
+const swatch = key => {
+  const s = el("span", { className: "swatch" });
+  s.style.background = `var(--${key})`;
+  return s;
+};
+const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleString("bg-BG", { dateStyle: "short", timeStyle: "short" }) : "—";
+const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
+
+function countStates(items) {
+  const counts = Object.fromEntries(STATES.map(s => [s.key, 0]));
+  for (const item of items) counts[item.state] = (counts[item.state] || 0) + 1;
+  return counts;
+}
+
+function renderRun() {
+  const { started, finished, error, interval } = data.run;
+  const node = document.getElementById("run");
+  node.replaceChildren();
+  if (!started) { node.append("Първото минаване още не е започнало."); return; }
+  const running = !finished || finished < started;
+  node.append(running
+    ? `Минаване в момента (от ${fmtTime(started)}).`
+    : `Последно минаване: ${fmtTime(finished)} · на всеки ${Math.round(interval / 60)} мин.`);
+  if (error) node.append(" ", el("span", { className: "err", textContent: `Грешка: ${error}` }));
+}
+
+function renderTiles(counts) {
+  const total = data.items.length;
+  const tiles = [el("div", { className: "tile" },
+    el("div", { className: "label", textContent: "Общо" }),
+    el("div", { className: "value", textContent: total }))];
+  for (const s of STATES) {
+    if (s.key === "ignored" && !counts.ignored) continue;
+    const pct = total ? Math.round(counts[s.key] / total * 100) : 0;
+    tiles.push(el("div", { className: "tile" },
+      el("div", { className: "label" }, swatch(s.key), `${s.icon} ${s.label}`),
+      el("div", { className: "value", textContent: counts[s.key] }),
+      el("div", { className: "pct", textContent: `${pct}%` })));
+  }
+  document.getElementById("tiles").replaceChildren(...tiles);
+}
+
+function renderChart() {
+  document.getElementById("legend").replaceChildren(...CHART_STATES.map(s =>
+    el("span", {}, swatch(s.key), `${s.icon} ${s.label}`)));
+
+  const studios = new Map();
+  for (const item of data.items) {
+    if (item.state === "ignored") continue;
+    if (!studios.has(item.studio)) studios.set(item.studio, countStates([]));
+    studios.get(item.studio)[item.state]++;
+  }
+  const open = c => c.skipped + c.locked + c.pending;
+  const sum = c => open(c) + c.matched;
+  const sorted = [...studios].sort((a, b) => open(b[1]) - open(a[1]) || sum(b[1]) - sum(a[1]) || a[0].localeCompare(b[0]));
+  const shown = showAllStudios ? sorted : sorted.slice(0, STUDIO_LIMIT);
+  const max = Math.max(1, ...shown.map(([, c]) => sum(c)));
+
+  const rows = shown.map(([studio, counts]) => {
+    const track = el("div", { className: "track" });
+    for (const s of CHART_STATES) {
+      if (!counts[s.key]) continue;
+      const seg = el("div", { className: "seg" });
+      seg.style.width = `${counts[s.key] / max * 100}%`;
+      seg.style.background = `var(--${s.key})`;
+      seg.dataset.tip = JSON.stringify([studio, `${s.icon} ${s.label}: ${counts[s.key]} от ${sum(counts)}`]);
+      seg.onclick = () => { studioFilter = studio; stateFilter = s.key; document.getElementById("search").value = ""; renderTable(); document.getElementById("tbody").scrollIntoView({ behavior: "smooth" }); };
+      track.append(seg);
+    }
+    return el("div", { className: "row" },
+      el("div", { className: "name", textContent: studio, title: studio }),
+      track,
+      el("div", { className: "total", textContent: sum(counts) }));
+  });
+  document.getElementById("rows").replaceChildren(...(rows.length ? rows : [el("div", { className: "empty", textContent: "Няма данни още." })]));
+
+  const more = document.getElementById("more");
+  more.hidden = sorted.length <= STUDIO_LIMIT;
+  more.textContent = showAllStudios ? "Покажи по-малко" : `Покажи всички ${sorted.length} студиа`;
+}
+
+function renderFilters(counts) {
+  const options = [{ key: "all", label: "Всички", count: data.items.length }, ...STATES.filter(s => counts[s.key]).map(s => ({ ...s, count: counts[s.key] }))];
+  const buttons = options.map(o => {
+    const b = el("button", { type: "button" });
+    if (o.key !== "all") b.append(swatch(o.key));
+    b.append(`${o.label} (${o.count})`);
+    b.setAttribute("aria-pressed", stateFilter === o.key);
+    b.onclick = () => { stateFilter = o.key; renderFilters(counts); renderTable(); };
+    return b;
+  });
+  if (studioFilter) {
+    const b = el("button", { type: "button", textContent: `Студио: ${studioFilter} ✕` });
+    b.setAttribute("aria-pressed", "true");
+    b.onclick = () => { studioFilter = null; renderFilters(counts); renderTable(); };
+    buttons.push(b);
+  }
+  document.getElementById("filters").replaceChildren(...buttons);
+}
+
+function renderTable() {
+  renderFilters(countStates(data.items));
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const order = Object.fromEntries(STATES.map((s, i) => [s.key, i]));
+  const items = data.items
+    .filter(i => stateFilter === "all" || i.state === stateFilter)
+    .filter(i => !studioFilter || i.studio === studioFilter)
+    .filter(i => !q || `${i.studio} ${i.file} ${i.detail}`.toLowerCase().includes(q))
+    .sort((a, b) => order[b.state] - order[a.state] || a.studio.localeCompare(b.studio) || a.file.localeCompare(b.file));
+
+  const rows = items.map(i => {
+    const s = byKey[i.state] || { label: i.state, icon: "" };
+    return el("tr", {},
+      el("td", { textContent: i.studio }),
+      el("td", {}, el("a", { href: jellyfinLink(i.id), target: "_blank", rel: "noopener", textContent: i.file })),
+      el("td", {}, el("span", { className: "state" }, swatch(i.state), `${s.icon} ${s.label}`)),
+      el("td", { textContent: i.detail }),
+      el("td", { className: "time", textContent: fmtTime(i.checked) }));
+  });
+  document.getElementById("tbody").replaceChildren(...(rows.length ? rows
+    : [el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "Няма филми за този филтър." }))]));
+}
+
+async function refresh() {
+  try {
+    data = await (await fetch("api/status")).json();
+  } catch (e) {
+    document.getElementById("run").textContent = `Няма връзка със сървъра: ${e}`;
+    return;
+  }
+  renderRun();
+  renderTiles(countStates(data.items));
+  renderChart();
+  renderTable();
+}
+
+const tooltip = document.getElementById("tooltip");
+document.getElementById("rows").addEventListener("mousemove", e => {
+  const tip = e.target.dataset?.tip;
+  if (!tip) { tooltip.style.display = "none"; return; }
+  const [title, line] = JSON.parse(tip);
+  tooltip.replaceChildren(el("b", { textContent: title }), line);
+  tooltip.style.display = "block";
+  const x = Math.min(e.clientX + 12, window.innerWidth - tooltip.offsetWidth - 8);
+  tooltip.style.left = `${x}px`;
+  tooltip.style.top = `${e.clientY + 14}px`;
+});
+document.getElementById("rows").addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+document.getElementById("more").onclick = () => { showAllStudios = !showAllStudios; renderChart(); };
+document.getElementById("search").addEventListener("input", renderTable);
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

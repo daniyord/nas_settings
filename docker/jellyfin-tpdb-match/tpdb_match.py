@@ -32,7 +32,7 @@ RETRY_AFTER = 24 * 3600
 MIN_SIMILARITY = 0.9
 MAX_RUNTIME_OFF_MINUTES = 15
 # Gives the plugin's refresh time to write the NFO and artwork next to the file before it is moved
-ORGANIZE_AFTER = 600
+ORGANIZE_AFTER = 120
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 # Like Jellyfin's [imdbid-tt...]: a ThePornDB id in a file or folder name pins the match, no search involved
 ID_TAG = re.compile(r"\s*\[tpdbid-(" + UUID + r")\]", re.I)
@@ -281,6 +281,7 @@ def run_once():
     items = jellyfin("/Items", ParentId=library["ItemId"], Recursive="true", IncludeItemTypes="Movie", Fields="Path,ProviderIds,Studios", Limit=100000)["Items"]
     # Classify everything first so the status page shows the whole library before the slow ThePornDB lookups
     todo = []
+    next_organize = float("inf")
     for item in items:
         location = next((l for l in library["Locations"] if item["Path"].startswith(l.rstrip("/") + "/")), None)
         parts = item["Path"][len(location.rstrip("/")) + 1:].split("/") if location else []
@@ -298,8 +299,11 @@ def run_once():
             merge_studios(item, admin, f"{studio}/{name}")
             # Counted from when this process first saw the item matched, as the plugin also identifies new
             # items on its own and is still writing their artwork right after
-            if time.time() - matched_at.setdefault(item["Id"], time.time()) > ORGANIZE_AFTER:
+            due = matched_at.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
+            if time.time() > due:
                 organize(item, parts, f"{studio}/{name}")
+            elif len(parts) == 2 or (len(parts) == 3 and not ID_TAG.search(parts[1])):
+                next_organize = min(next_organize, due)
             continue
         if current_state(item["Id"]) not in ("skipped", "locked"):
             record(item, studio, name, "pending", "waiting for the matcher")
@@ -345,21 +349,26 @@ def run_once():
         match = f"{movie['title']} ({movie['site']['name']}, {(movie.get('date') or '')[:4]})"
         print(f"matched {studio}/{name} -> {match}", flush=True)
         matched_at[item["Id"]] = time.time()
+        next_organize = min(next_organize, time.time() + ORGANIZE_AFTER)
         record(item, studio, name, "matched", match)
+
+    return next_organize
 
 
 def matcher_loop():
     while True:
         wake.clear()
         last_run["started"] = time.time()
+        next_organize = float("inf")
         try:
-            run_once()
+            next_organize = run_once()
             last_run["error"] = None
         except Exception as e:
             print(f"error: {e!r}", flush=True)
             last_run["error"] = repr(e)
         last_run["finished"] = time.time()
-        wake.wait(INTERVAL)
+        # Wake early for a movie waiting to be moved rather than leaving it for the next full interval
+        wake.wait(max(1, min(INTERVAL, next_organize - time.time() + 1)))
 
 
 app = FastAPI(title="jellyfin-tpdb-match")

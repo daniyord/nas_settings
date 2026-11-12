@@ -300,7 +300,7 @@ function retryControls(item) {
   const input = el("input", {
     type: "text",
     value: drafts.get(item.id) ?? item.keywords.join(`${KEYWORD_SEP} `),
-    placeholder: "Ключови думи или точно заглавие, разделени с ;",
+    placeholder: "Ключови думи, точно заглавие или линк към ThePornDB, разделени с ;",
   });
   input.oninput = () => drafts.set(item.id, input.value);
   const msg = el("span", { className: "msg" });

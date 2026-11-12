@@ -11,6 +11,7 @@ import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -32,6 +33,11 @@ MIN_SIMILARITY = 0.9
 MAX_RUNTIME_OFF_MINUTES = 15
 # Gives the plugin's refresh time to write the NFO and artwork next to the file before it is moved
 ORGANIZE_AFTER = 600
+UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+# Like Jellyfin's [imdbid-tt...]: a ThePornDB id in a file or folder name pins the match, no search involved
+ID_TAG = re.compile(r"\s*\[tpdbid-(" + UUID + r")\]", re.I)
+# A keyword that is a ThePornDB movie link (uuid, slug or numeric id) or a bare uuid pins the match too
+TPDB_REF = re.compile(r"(?:https?://)?(?:www\.)?theporndb\.net/movies/([\w-]+)/?|(" + UUID + ")", re.I)
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".mpg", ".mpeg", ".ts", ".webm"}
 
 skipped = {}
@@ -76,6 +82,15 @@ def jellyfin(path, method="GET", body=None, **params):
 
 def tpdb(token, path, **params):
     return request(f"https://api.theporndb.net/{path}?" + urllib.parse.urlencode(params), {"Authorization": f"Bearer {token}"})["data"]
+
+
+def tpdb_movie(token, ref):
+    try:
+        return tpdb(token, f"movies/{urllib.parse.quote(ref)}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
 
 
 def norm(text):
@@ -180,33 +195,53 @@ def sidecars(folder, stem):
     return result
 
 
-# Moves <library>/<Studio>/<Title>.mp4 and its sidecar files into <library>/<Studio>/<Title (Year)>/
-def organize(item, label):
+# Gives a matched movie its own folder named "<Title (Year)> [tpdbid-<id>]": a movie lying directly in its
+# studio folder moves there with its sidecar files, a movie already alone in a folder has the tag appended
+def organize(item, parts, label):
+    provider = re.fullmatch(r"movies/(" + UUID + ")", item.get("ProviderIds", {}).get("ThePornDB", ""), re.I)
+    if not provider or not os.path.isfile(item["Path"]):
+        return
+    tag = f"[tpdbid-{provider.group(1).lower()}]"
     folder, filename = os.path.split(item["Path"])
     stem = os.path.splitext(filename)[0]
-    year = item.get("ProductionYear")
-    target = os.path.join(folder, stem if not year or re.search(r"\(\d{4}\)\s*$", stem) else f"{stem} ({year})")
-    if not os.path.isfile(item["Path"]):
+
+    if len(parts) == 2:
+        year = item.get("ProductionYear")
+        base = stem if not year or re.search(r"\(\d{4}\)\s*$", stem) else f"{stem} ({year})"
+        source, target = item["Path"], os.path.join(folder, f"{base} {tag}")
+        moves = [(os.path.join(folder, n), os.path.join(target, n)) for n in [filename, *sidecars(folder, stem)]]
+    elif len(parts) == 3 and not ID_TAG.search(parts[1]):
+        if sum(os.path.splitext(n)[1].lower() in VIDEO_EXTS for n in os.listdir(folder)) != 1:
+            return
+        source, target = folder, f"{folder} {tag}"
+        moves = [(folder, target)]
+    else:
         return
     if os.path.exists(target):
         print(f"organize {label}: {target} already exists", flush=True)
         return
-    os.mkdir(target)
-    parent = os.stat(folder)
-    os.chown(target, parent.st_uid, parent.st_gid)
-    os.chmod(target, parent.st_mode & 0o7777)
-    for name in [filename, *sidecars(folder, stem)]:
-        os.rename(os.path.join(folder, name), os.path.join(target, name))
-    new_path = os.path.join(target, filename)
+
+    if len(parts) == 2:
+        os.mkdir(target)
+        parent = os.stat(folder)
+        os.chown(target, parent.st_uid, parent.st_gid)
+        os.chmod(target, parent.st_mode & 0o7777)
+    for src, dst in moves:
+        os.rename(src, dst)
     with lock:
-        if item["Path"] in keywords_by_path:
-            keywords_by_path[new_path] = keywords_by_path.pop(item["Path"])
+        if len(parts) == 2:
+            moved = {item["Path"]: os.path.join(target, filename)} if item["Path"] in keywords_by_path else {}
+        else:
+            moved = {p: target + p[len(source):] for p in keywords_by_path if p.startswith(source + "/")}
+        for old, new in moved.items():
+            keywords_by_path[new] = keywords_by_path.pop(old)
+        if moved:
             save_keywords()
     jellyfin("/Library/Media/Updated", "POST", {"Updates": [
-        {"Path": item["Path"], "UpdateType": "Deleted"},
+        {"Path": source, "UpdateType": "Deleted"},
         {"Path": target, "UpdateType": "Created"},
     ]})
-    print(f"organize {label} -> {os.path.relpath(target, os.path.dirname(folder))}/", flush=True)
+    print(f"organize {label} -> {os.path.basename(target)}/", flush=True)
 
 
 def record(item, studio, name, state, detail, candidates=()):
@@ -238,23 +273,26 @@ def run_once():
             record(item, "", os.path.basename(item["Path"]), "ignored", "not inside a studio folder")
             continue
         studio = parts[0]
-        name = os.path.splitext(parts[-1])[0]
-        if item.get("ProviderIds", {}).get("ThePornDB") and any(same_studio(studio, s["Name"]) for s in item.get("Studios", [])):
+        name = ID_TAG.sub("", os.path.splitext(parts[-1])[0]).strip()
+        tag = ID_TAG.search(item["Path"])
+        provider = item.get("ProviderIds", {}).get("ThePornDB")
+        # A tagged item is matched only once it points at the tagged id; retagging a folder re-points it
+        if provider and (provider.lower() == f"movies/{tag.group(1).lower()}" if tag else any(same_studio(studio, s["Name"]) for s in item.get("Studios", []))):
             if current_state(item["Id"]) != "matched":
                 record(item, studio, name, "matched", item["Name"])
             merge_studios(item, admin, f"{studio}/{name}")
-            if len(parts) == 2 and time.time() - matched_at.get(item["Id"], 0) > ORGANIZE_AFTER:
-                organize(item, f"{studio}/{name}")
+            if time.time() - matched_at.get(item["Id"], 0) > ORGANIZE_AFTER:
+                organize(item, parts, f"{studio}/{name}")
             continue
         if current_state(item["Id"]) not in ("skipped", "locked"):
             record(item, studio, name, "pending", "waiting for the matcher")
-        todo.append((item, studio, name))
+        todo.append((item, studio, name, tag))
 
     with lock:
         for gone in set(status) - {item["Id"] for item in items}:
             del status[gone]
 
-    for item, studio, name in todo:
+    for item, studio, name, tag in todo:
         if time.time() - skipped.get(item["Id"], 0) < RETRY_AFTER:
             continue
 
@@ -270,7 +308,14 @@ def run_once():
         with lock:
             keywords = list(keywords_by_path.get(item["Path"], []))
 
-        movie, reason, candidates = find_match(token, title, studio, year, minutes, keywords)
+        refs = [m.group(1) or m.group(2) for k in keywords if (m := TPDB_REF.fullmatch(k.strip()))]
+        ref = tag.group(1) if tag else (refs[0] if refs else None)
+        if ref:
+            movie, reason, candidates = tpdb_movie(token, ref), None, []
+            if not movie:
+                reason = f"ThePornDB has no movie {ref}"
+        else:
+            movie, reason, candidates = find_match(token, title, studio, year, minutes, keywords)
         if not movie:
             print(f"skip {studio}/{name}: {reason}", flush=True)
             skipped[item["Id"]] = time.time()

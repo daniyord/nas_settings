@@ -120,6 +120,7 @@ td.history li { margin: 2px 0; }
 .retry input { min-width: 200px; padding: 4px 8px; }
 .retry button { white-space: nowrap; padding: 4px 10px; }
 .retry .msg { color: var(--error); font-size: 13px; align-self: center; }
+.retry button.danger { color: var(--error); border-color: var(--error); }
 </style>
 </head>
 <body>
@@ -181,7 +182,7 @@ const MATCHED_BY = {
   title: "по заглавие", keywords: "по ключови думи", link: "по линк", tag: "по таг в папката",
   plugin: "от plugin-а", unknown: "преди историята",
 };
-const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат" };
+const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат", deleted: "Изтрит" };
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -308,6 +309,7 @@ function renderTable() {
     const s = byKey[i.state] || { label: i.state, icon: "" };
     const detail = el("td", {}, i.detail);
     if (i.state === "skipped" || i.state === "pending") detail.append(...retryControls(i));
+    if (i.state === "duplicate") detail.append(deleteControl(i));
     const toggle = el("button", { type: "button", className: "link", textContent: openHistory.has(i.id) ? "Скрий историята" : "История" });
     toggle.onclick = () => toggleHistory(i.id);
     const matched = el("td", { className: "time" });
@@ -397,6 +399,25 @@ function retryControls(item) {
   }
   parts.push(el("div", { className: "retry" }, input, button, msg));
   return parts;
+}
+
+function deleteControl(item) {
+  const msg = el("span", { className: "msg" });
+  const button = el("button", { type: "button", className: "danger", textContent: "Изтрий дубликата" });
+  button.onclick = async () => {
+    if (!confirm(`Да изтрия ли ${item.path}?\nОригиналът в папката с таг остава.`)) return;
+    button.disabled = true;
+    try {
+      const res = await fetch(`api/items/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+      if (!res.ok) throw new Error((await res.json()).detail || res.status);
+      button.blur();
+      refresh();
+    } catch (e) {
+      msg.textContent = `Грешка: ${e.message}`;
+      button.disabled = false;
+    }
+  };
+  return el("div", { className: "retry" }, button, msg);
 }
 
 // Poll quickly for a minute after a retry so its result shows up without waiting for the 30s refresh

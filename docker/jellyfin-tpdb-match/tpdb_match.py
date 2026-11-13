@@ -388,6 +388,7 @@ def run_once():
                 if current_state(item["Id"]) != "duplicate":
                     event(item["Path"], "duplicate", detail, label)
                 record(item, studio, name, "duplicate", detail)
+                status[item["Id"]]["original"] = original
                 continue
         # ctime rather than mtime: copy tools restore the source's mtime, but every write moves ctime. A file still
         # being copied reports a short runtime, and moving it would pull it from under the copy
@@ -572,6 +573,28 @@ def retry(item_id: str, body: Retry):
         priority.add(entry["path"])
     wake.set()
     return {**entry, "keywords": keywords}
+
+
+@app.delete("/api/items/{item_id}")
+def delete_duplicate(item_id: str):
+    with lock:
+        entry = status.get(item_id)
+        if not entry:
+            raise HTTPException(404, "unknown item")
+        if entry["state"] != "duplicate":
+            raise HTTPException(409, f"item is {entry['state']}")
+        path, original = entry["path"], entry["original"]
+        # Only ever delete the copy while the original is still in place, and never anything inside a tagged folder
+        if not os.path.isfile(original) or not os.path.isfile(path) or ID_TAG.search(os.path.dirname(path)):
+            raise HTTPException(409, "original or copy changed since the last run")
+        folder = os.path.dirname(path)
+        extra = sidecars(folder, os.path.splitext(os.path.basename(path))[0])
+        for name in [os.path.basename(path), *extra]:
+            os.remove(os.path.join(folder, name))
+        event(path, "deleted", f"duplicate of {original}" + (f", with {', '.join(extra)}" if extra else ""), f"{entry['studio']}/{entry['file']}")
+        del status[item_id]
+    jellyfin("/Library/Media/Updated", "POST", {"Updates": [{"Path": path, "UpdateType": "Deleted"}]})
+    return {"deleted": [os.path.basename(path), *extra]}
 
 
 if __name__ == "__main__":

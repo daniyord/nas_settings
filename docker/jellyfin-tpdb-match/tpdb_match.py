@@ -190,7 +190,7 @@ def tag_ref(tag):
 def tmdb_candidate(movie, similarity):
     companies = ", ".join(c["name"] for c in movie.get("production_companies", [])) or "?"
     return {"title": movie["title"], "site": f"{companies} (TMDb)", "year": int(movie["release_date"][:4]) if movie.get("release_date") else None,
-            "minutes": movie.get("runtime") or None, "similarity": similarity}
+            "minutes": movie.get("runtime") or None, "similarity": similarity, "link": f"https://www.themoviedb.org/movie/{movie['id']}"}
 
 
 # TMDb has few adult movies and lists production companies rather than sites, so a match still has to name
@@ -309,7 +309,8 @@ def find_match(token, title, studio, year, minutes, keywords, sites):
         scored.append((similarity, movie_year, off, movie))
 
     candidates = [
-        {"title": m["title"], "site": m["site"]["name"], "year": y, "minutes": round((m.get("duration") or 0) / 60) or None, "similarity": s}
+        {"title": m["title"], "site": m["site"]["name"], "year": y, "minutes": round((m.get("duration") or 0) / 60) or None, "similarity": s,
+         "link": f"https://theporndb.net/movies/{m['id']}"}
         for s, y, _, m in sorted(scored, key=lambda s: -s[0])[:3]
     ]
     best_similarity = max((s[0] for s in scored), default=0)

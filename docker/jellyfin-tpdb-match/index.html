@@ -392,9 +392,11 @@ function retryControls(item) {
       const b = el("button", {
         type: "button",
         textContent: `${c.title} · ${c.site}${c.year ? `, ${c.year}` : ""}${c.minutes ? `, ${c.minutes} мин` : ""} · ${Math.round(c.similarity * 100)}%`,
-        title: "Използвай това заглавие като ключова дума",
+        title: c.link ? `Свържи точно с този филм (${c.link})` : "Използвай това заглавие като ключова дума",
       });
-      b.onclick = () => { input.value = c.title; drafts.set(item.id, c.title); input.focus(); };
+      // The title alone would hit the same studio, year or runtime check that turned the candidate down
+      const value = c.link || c.title;
+      b.onclick = () => { input.value = value; drafts.set(item.id, value); input.focus(); };
       return b;
     })));
   }

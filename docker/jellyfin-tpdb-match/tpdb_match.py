@@ -80,7 +80,9 @@ CREATE TABLE IF NOT EXISTS movies (
     matched_by TEXT,
     skipped_at REAL,
     skip_reason TEXT,
-    candidates TEXT NOT NULL DEFAULT '[]'
+    candidates TEXT NOT NULL DEFAULT '[]',
+    -- The match whose missing ThePornDB cover was last looked up on TMDb
+    poster_checked TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
@@ -92,6 +94,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_movie ON events(movie_id, at);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """)
+if "poster_checked" not in {r["name"] for r in db.execute("PRAGMA table_info(movies)")}:
+    db.execute("ALTER TABLE movies ADD COLUMN poster_checked TEXT")
 
 
 def meta(key, value=None):
@@ -527,6 +531,20 @@ def check_plugin_pick(token, item, full, studio, name, label, provider, parts, s
     record({**item, "Path": path}, studio, name, "matched", found["title"])
 
 
+# A ThePornDB entry without a cover leaves Jellyfin with a frame grabbed from the video as the poster; TMDb often
+# has the same movie (same studio, date and runtime) with its cover
+def check_poster(token, item, full, studio, label, provider):
+    picked = tpdb_movie(token, provider.split("/", 1)[1])
+    if picked and not has_cover(picked) and TMDB_API_KEY:
+        year = int(picked["date"][:4]) if picked.get("date") else None
+        minutes = (full.get("RunTimeTicks") or 0) / 600_000_000
+        found, _, _ = find_tmdb_match(picked["title"], studio, year, minutes, [])
+        if found and found.get("poster_path"):
+            jellyfin(f"/Items/{item['Id']}/RemoteImages/Download", "POST", Type="Primary", ImageUrl=f"https://image.tmdb.org/t/p/original{found['poster_path']}")
+            event(item["Path"], "poster", f"from TMDb, as ThePornDB has none ({found['title']}, tmdb/{found['id']})", label)
+    update_movie(item["Path"], poster_checked=provider)
+
+
 def run_once():
     plugin = next(p for p in jellyfin("/Plugins") if p["Name"] == "ThePornDB")
     token = jellyfin(f"/Plugins/{plugin['Id']}/Configuration")["MetadataAPIToken"]
@@ -609,7 +627,7 @@ def run_once():
             # The plugin takes whichever release of a movie its search returns first, often a much later re-release
             # with another runtime; its pick is searched again here before the movie is moved into a tagged folder
             if movie(item["Path"])["matched_by"] == "plugin" and item.get("RunTimeTicks"):
-                todo.append((item, studio, name, label, tag, (provider, parts)))
+                todo.append((item, studio, name, label, tag, ("plugin", provider, parts)))
                 continue
             merge_studios(item, admin, label)
             # Counted from when this process first saw the item matched, as the plugin also identifies new
@@ -619,6 +637,9 @@ def run_once():
                 organize(item, parts, label)
             elif len(parts) == 2 or (len(parts) == 3 and not ID_TAG.search(parts[1])):
                 next_wake = min(next_wake, due)
+            # Once in its tagged folder, where the artwork stays put
+            if tag and provider.lower() == tagged_id and movie(item["Path"])["poster_checked"] != provider:
+                todo.append((item, studio, name, label, tag, ("poster", provider)))
             continue
         tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
         if not provider and tmdb_id and row["tpdb_id"] == f"tmdb/{tmdb_id}":
@@ -669,20 +690,24 @@ def run_once():
     sites_cache = {}
     lookups = 0
     # Movies retried from the status page go first, ahead of a large import
-    todo.sort(key=lambda t: t[0]["Path"] not in priority)
+    # and new movies ahead of the checks of matched ones
+    todo.sort(key=lambda t: (t[0]["Path"] not in priority, {None: 0, "plugin": 1, "poster": 2}[t[5] and t[5][0]]))
     last_run["queued"] = len(todo)
-    for n, (item, studio, name, label, tag, plugin_pick) in enumerate(todo):
+    for n, (item, studio, name, label, tag, check) in enumerate(todo):
         last_run["queued"] = len(todo) - n
         full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
         if full.get("LockData"):
-            if not plugin_pick:
+            if not check:
                 record(item, studio, name, "locked", "metadata is locked in Jellyfin")
             continue
-        if plugin_pick:
+        if check:
             if lookups == MAX_LOOKUPS_PER_RUN:
                 return time.time()
             lookups += 1
-            check_plugin_pick(token, item, full, studio, name, label, *plugin_pick, sites_cache)
+            if check[0] == "plugin":
+                check_plugin_pick(token, item, full, studio, name, label, *check[1:], sites_cache)
+            else:
+                check_poster(token, item, full, studio, label, check[1])
             continue
         if lookups == MAX_LOOKUPS_PER_RUN:
             return time.time()

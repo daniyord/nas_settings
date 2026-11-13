@@ -20,6 +20,7 @@
   --pending: #c3c2b7;
   --duplicate: #fab219;
   --error: #d03b3b;
+  --tmdb: #2f7fd8;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -112,6 +113,8 @@ td a { color: inherit; }
 .empty { color: var(--muted); padding: 16px 8px; }
 button.link { border: none; background: none; padding: 0; color: var(--ink-2); text-decoration: underline; font-size: 13px; }
 td.history { background: var(--page); color: var(--ink-2); }
+/* TMDb is the last resort and the likeliest to be wrong, so its matches stand out for review */
+tr.tmdb > td { background: color-mix(in srgb, var(--tmdb) 12%, transparent); }
 td.history ul { margin: 0; padding-left: 18px; }
 td.history li { margin: 2px 0; }
 .cands { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; align-items: center; color: var(--muted); font-size: 13px; }
@@ -169,6 +172,7 @@ const STATES = [
 const CHART_STATES = STATES.filter(s => s.key !== "ignored");
 const STUDIO_LIMIT = 25;
 const byKey = Object.fromEntries(STATES.map(s => [s.key, s]));
+const isTmdb = i => i.state === "matched" && (i.matched_by || "").startsWith("tmdb");
 
 let data = { items: [], run: {} };
 let stateFilter = "all";
@@ -180,7 +184,7 @@ const openHistory = new Set();
 const histories = new Map();
 const MATCHED_BY = {
   title: "по заглавие", keywords: "по ключови думи", link: "по линк", tag: "по таг в папката",
-  plugin: "от plugin-а", jellyfin: "ръчно в Jellyfin", unknown: "преди историята",
+  plugin: "от plugin-а", "plugin-checked": "от plugin-а, проверен", jellyfin: "ръчно в Jellyfin", unknown: "преди историята",
   tmdb: "в TMDb по заглавие", "tmdb-link": "по линк към TMDb", "tmdb-tag": "по TMDb таг в папката",
 };
 const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат", deleted: "Изтрит" };
@@ -277,6 +281,8 @@ function renderChart() {
 
 function renderFilters(counts) {
   const options = [{ key: "all", label: "Всички", count: data.items.length }, ...STATES.filter(s => counts[s.key]).map(s => ({ ...s, count: counts[s.key] }))];
+  const tmdbCount = data.items.filter(isTmdb).length;
+  if (tmdbCount) options.push({ key: "tmdb", label: "През TMDb", count: tmdbCount });
   const buttons = options.map(o => {
     const b = el("button", { type: "button" });
     if (o.key !== "all") b.append(swatch(o.key));
@@ -299,7 +305,7 @@ function renderTable() {
   const q = document.getElementById("search").value.trim().toLowerCase();
   const order = Object.fromEntries(STATES.map((s, i) => [s.key, i]));
   const items = data.items
-    .filter(i => stateFilter === "all" || i.state === stateFilter)
+    .filter(i => stateFilter === "all" || (stateFilter === "tmdb" ? isTmdb(i) : i.state === stateFilter))
     .filter(i => !studioFilter || i.studio === studioFilter)
     .filter(i => !q || `${i.studio} ${i.file} ${i.detail}`.toLowerCase().includes(q))
     // Most recent matches first, so a large import's progress shows at the top
@@ -318,10 +324,11 @@ function renderTable() {
     const row = el("tr", {},
       el("td", { textContent: i.studio }),
       el("td", {}, el("a", { href: jellyfinLink(i.id), target: "_blank", rel: "noopener", textContent: i.file })),
-      el("td", {}, el("span", { className: "state" }, swatch(i.state), `${s.icon} ${s.label}`)),
+      el("td", {}, el("span", { className: "state" }, swatch(isTmdb(i) ? "tmdb" : i.state), `${s.icon} ${s.label}${isTmdb(i) ? " (TMDb)" : ""}`)),
       detail,
       matched,
       el("td", { className: "time" }, fmtTime(i.checked), el("br"), toggle));
+    if (isTmdb(i)) row.className = "tmdb";
     return openHistory.has(i.id) ? [row, historyRow(i.id)] : [row];
   });
   document.getElementById("tbody").replaceChildren(...(rows.length ? rows

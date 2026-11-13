@@ -41,6 +41,9 @@ ORGANIZE_AFTER = 120
 MAX_LOOKUPS_PER_RUN = 20
 STALE_RESCAN = 300
 SETTLE_AFTER = 120
+# Without the runtime, re-releases of a movie (Penthouse lists most twice or three times) can't be told apart; a
+# file Jellyfin can't read the runtime of is searched anyway after this long
+RUNTIME_WAIT = 3600
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 # Like Jellyfin's [imdbid-tt...]: a ThePornDB (or TMDb) id in a file or folder name pins the match, no search involved
 ID_TAG = re.compile(r"\s*\[(tpdbid-" + UUID + r"|tmdbid-\d+)\]", re.I)
@@ -237,8 +240,9 @@ def find_tmdb_match(title, studio, year, minutes, keywords):
         scored = [s for s in scored if s[1] == year]
     scored.sort(key=lambda s: s[2] if s[2] is not None else float("inf"))
     best = scored[0]
+    # TMDb's adult entries are often stubs with a title and a company only; the runtime is the one check left
     if best[2] is None:
-        return (best[3], None, []) if len(scored) == 1 else (None, f"{len(scored)} TMDb candidates and no runtime to tell them apart", candidates)
+        return None, "no runtime on TMDb or the file to confirm the match", candidates
     if best[2] > MAX_RUNTIME_OFF_MINUTES:
         return None, f"TMDb runtime differs by {best[2]:.0f} min", candidates
     if len(scored) > 1 and scored[1][2] is not None and scored[1][2] - best[2] < 5:
@@ -486,6 +490,34 @@ def current_state(item_id):
         return status.get(item_id, {}).get("state")
 
 
+def check_plugin_pick(token, item, full, studio, name, label, provider, parts, sites_cache):
+    year_match = re.search(r"\((\d{4})\)\s*$", name)
+    year = int(year_match.group(1)) if year_match else None
+    title = re.sub(r"\s*\(\d{4}\)\s*$", "", name)
+    minutes = (full.get("RunTimeTicks") or 0) / 600_000_000
+    keywords = json.loads(movie(item["Path"])["keywords"])
+    found, _, _ = find_match(token, title, studio, year, minutes, keywords, studio_sites(token, studio, sites_cache))
+    better = f"movies/{found['id']}" if found else None
+    if not better or better.lower() == provider.lower():
+        update_movie(item["Path"], matched_by="plugin-checked")
+        return
+    found_year = int(found["date"][:4]) if found.get("date") else None
+    full["ProviderIds"] = {"ThePornDB": better}
+    jellyfin(f"/Items/{item['Id']}", "POST", full)
+    jellyfin(f"/Items/{item['Id']}/Refresh", "POST", MetadataRefreshMode="FullRefresh", ImageRefreshMode="FullRefresh", ReplaceAllMetadata="true", ReplaceAllImages="true")
+    path = item["Path"]
+    if len(parts) == 3 and ID_TAG.search(parts[1]):
+        # Retagged right away, with the new title and year, as the old tag would otherwise pin the plugin's pick
+        # again; the new id is stored only once that worked, and the next run retries the retag otherwise
+        path = organize({**item, "ProviderIds": {"ThePornDB": better}, "Name": found["title"], "ProductionYear": found_year}, parts, label)
+        if not path:
+            return
+    update_movie(path, tpdb_id=better, matched_at=time.time(), matched_by="title")
+    event(path, "matched", f"{found['title']} ({found['site']['name']}, {found_year or ''}) ({better}, instead of the plugin's {provider})", label)
+    seen_matched_at[item["Id"]] = time.time()
+    record({**item, "Path": path}, studio, name, "matched", found["title"])
+
+
 def run_once():
     plugin = next(p for p in jellyfin("/Plugins") if p["Name"] == "ThePornDB")
     token = jellyfin(f"/Plugins/{plugin['Id']}/Configuration")["MetadataAPIToken"]
@@ -565,6 +597,11 @@ def run_once():
                     event(item["Path"], "matched", f"{item['Name']} ({provider}, by the Jellyfin plugin)", label)
             if current_state(item["Id"]) != "matched":
                 record(item, studio, name, "matched", item["Name"])
+            # The plugin takes whichever release of a movie its search returns first, often a much later re-release
+            # with another runtime; its pick is searched again here before the movie is moved into a tagged folder
+            if movie(item["Path"])["matched_by"] == "plugin" and item.get("RunTimeTicks"):
+                todo.append((item, studio, name, label, tag, (provider, parts)))
+                continue
             merge_studios(item, admin, label)
             # Counted from when this process first saw the item matched, as the plugin also identifies new
             # items on its own and is still writing their artwork right after
@@ -598,9 +635,12 @@ def run_once():
             if current_state(item["Id"]) != "skipped":
                 record(item, studio, name, "skipped", row["skip_reason"], json.loads(row["candidates"]))
             continue
+        if not item.get("RunTimeTicks") and time.time() < settles + RUNTIME_WAIT:
+            record(item, studio, name, "pending", "waiting for Jellyfin to read the runtime")
+            continue
         if current_state(item["Id"]) != "locked":
             record(item, studio, name, "pending", "waiting for the matcher")
-        todo.append((item, studio, name, label, tag))
+        todo.append((item, studio, name, label, tag, None))
 
     if backfill:
         meta("history_since", str(time.time()))
@@ -622,11 +662,18 @@ def run_once():
     # Movies retried from the status page go first, ahead of a large import
     todo.sort(key=lambda t: t[0]["Path"] not in priority)
     last_run["queued"] = len(todo)
-    for n, (item, studio, name, label, tag) in enumerate(todo):
+    for n, (item, studio, name, label, tag, plugin_pick) in enumerate(todo):
         last_run["queued"] = len(todo) - n
         full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
         if full.get("LockData"):
-            record(item, studio, name, "locked", "metadata is locked in Jellyfin")
+            if not plugin_pick:
+                record(item, studio, name, "locked", "metadata is locked in Jellyfin")
+            continue
+        if plugin_pick:
+            if lookups == MAX_LOOKUPS_PER_RUN:
+                return time.time()
+            lookups += 1
+            check_plugin_pick(token, item, full, studio, name, label, *plugin_pick, sites_cache)
             continue
         if lookups == MAX_LOOKUPS_PER_RUN:
             return time.time()

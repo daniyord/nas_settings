@@ -296,7 +296,16 @@ def organize(item, parts, label):
         source, target = item["Path"], os.path.join(folder, f"{base} {tag}")
         moves = [(item["Path"], os.path.join(target, filename))]
         moves += [(os.path.join(folder, n), os.path.join(target, folder_name(n, stem))) for n in sidecars(folder, stem)]
-    elif len(parts) == 3 and not ID_TAG.search(parts[1]):
+    elif len(parts) == 3 and ID_TAG.search(parts[1]):
+        if ID_TAG.search(parts[1]).group(1).lower() == provider.group(1).lower():
+            return
+        base = ID_TAG.sub("", parts[1]).strip()
+        year = item.get("ProductionYear")
+        if year:
+            base = re.sub(r"\(\d{4}\)$", f"({year})", base)
+        source, target = folder, os.path.join(os.path.dirname(folder), f"{base} {tag}")
+        moves = [(folder, target)]
+    elif len(parts) == 3:
         if sum(os.path.splitext(n)[1].lower() in VIDEO_EXTS for n in os.listdir(folder)) != 1:
             return
         source, target = folder, f"{folder} {tag}"
@@ -322,6 +331,7 @@ def organize(item, parts, label):
         {"Path": target, "UpdateType": "Created"},
     ]})
     event(new_path, "moved", f"{os.path.relpath(target, os.path.dirname(folder) if len(parts) == 2 else os.path.dirname(os.path.dirname(folder)))}/", label)
+    return new_path
 
 
 # Video file name (lowercased) -> its path, for the movies of a studio already in their own tagged folder
@@ -400,8 +410,21 @@ def run_once():
         tag = ID_TAG.search(item["Path"])
         provider = item.get("ProviderIds", {}).get("ThePornDB")
         row = movie(item["Path"])
-        # A tagged item is matched only once it points at the tagged id; retagging a folder re-points it
-        if provider and (provider.lower() == f"movies/{tag.group(1).lower()}" if tag else any(same_studio(studio, s["Name"]) for s in item.get("Studios", []))):
+        # A tagged item is matched only once it points at the tagged id; retagging a folder re-points it. When the
+        # folder still has the id last seen in Jellyfin but Jellyfin now has another one, the movie was identified
+        # again by hand there, so the folder follows Jellyfin instead
+        tagged_id = f"movies/{tag.group(1).lower()}" if tag else None
+        identified = bool(tag and provider and row["tpdb_id"] and row["tpdb_id"].lower() == tagged_id and provider.lower() != tagged_id)
+        if provider and (identified or (provider.lower() == tagged_id if tag else any(same_studio(studio, s["Name"]) for s in item.get("Studios", [])))):
+            if identified:
+                # Retagged right away and the new id stored only once that worked: a stored id that no longer
+                # matches the tag would read as a folder retagged by hand on the next run, undoing the fix
+                new_path = organize(item, parts, label)
+                if new_path:
+                    update_movie(new_path, tpdb_id=provider, matched_at=time.time(), matched_by="jellyfin", skipped_at=None)
+                    event(new_path, "matched", f"{item['Name']} ({provider}, identified in Jellyfin)", label)
+                record(item, studio, name, "matched", item["Name"])
+                continue
             if row["tpdb_id"] != provider:
                 if backfill:
                     update_movie(item["Path"], tpdb_id=provider, matched_by="unknown", skipped_at=None)

@@ -282,6 +282,15 @@ def folder_name(name, stem):
 
 # Gives a matched movie its own folder named "<Title (Year)> [tpdbid-<id>]": a movie lying directly in its
 # studio folder moves there with its sidecar files, a movie already alone in a folder has the tag appended
+# Folder name for a movie identified by hand: the file name may well be the wrong title, so Jellyfin's is used
+def identified_name(item, folder):
+    title = re.sub(r"\s+", " ", re.sub(r'[<>:"/\\|?*]', " ", item.get("Name") or "")).strip(" .")
+    if not title:
+        title = re.sub(r"\s*\(\d{4}\)$", "", ID_TAG.sub("", folder).strip())
+    year = item.get("ProductionYear") or (re.search(r"\((\d{4})\)", folder) or [None, None])[1]
+    return f"{title} ({year})" if year else title
+
+
 def organize(item, parts, label):
     provider = re.fullmatch(r"movies/(" + UUID + ")", item.get("ProviderIds", {}).get("ThePornDB", ""), re.I)
     if not provider or not os.path.isfile(item["Path"]):
@@ -299,11 +308,7 @@ def organize(item, parts, label):
     elif len(parts) == 3 and ID_TAG.search(parts[1]):
         if ID_TAG.search(parts[1]).group(1).lower() == provider.group(1).lower():
             return
-        base = ID_TAG.sub("", parts[1]).strip()
-        year = item.get("ProductionYear")
-        if year:
-            base = re.sub(r"\(\d{4}\)$", f"({year})", base)
-        source, target = folder, os.path.join(os.path.dirname(folder), f"{base} {tag}")
+        source, target = folder, os.path.join(os.path.dirname(folder), f"{identified_name(item, parts[1])} {tag}")
         moves = [(folder, target)]
     elif len(parts) == 3:
         if sum(os.path.splitext(n)[1].lower() in VIDEO_EXTS for n in os.listdir(folder)) != 1:

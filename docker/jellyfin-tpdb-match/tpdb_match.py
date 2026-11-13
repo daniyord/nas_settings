@@ -298,15 +298,23 @@ def find_match(token, title, studio, year, minutes, keywords, sites):
     # ("Cinderella" + "XXX Axel Braun Parody"), so either style of hint works
     texts = [title, *keywords] + ([f"{title} {' '.join(keywords)}"] if keywords else [])
     found = {}
-    for query in {title.replace(" - ", ": "), title.split(" - ")[0], *texts}:
-        for params in [{"q": query, "site": site} for site in sites] + [{"q": query}]:
-            for movie in tpdb(token, "movies", per_page=50, **params):
+    queries = {title.replace(" - ", ": "), title.split(" - ")[0], *texts}
+    # The search across all of ThePornDB is only a fallback for sites named unlike the studio: it takes up to
+    # minutes where a search within one site takes a second
+    for params in [[{"q": q, "site": site} for q in queries for site in sites], [{"q": q} for q in queries]]:
+        for p in params:
+            for movie in tpdb(token, "movies", per_page=50, **p):
                 if same_studio(studio, (movie.get("site") or {}).get("name", "")):
                     found[movie["id"]] = movie
+        if found:
+            break
 
     scored = []
     for movie in found.values():
-        similarity = round(max(difflib.SequenceMatcher(None, norm(t), norm(movie["title"])).ratio() for t in texts), 2)
+        # Some releases carry the studio in the title, as "Friends With Benefits (Penthouse)"
+        suffix = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", movie["title"])
+        names = [movie["title"]] + ([suffix.group(1)] if suffix and same_studio(studio, suffix.group(2)) else [])
+        similarity = round(max(difflib.SequenceMatcher(None, norm(t), norm(n)).ratio() for t in texts for n in names), 2)
         movie_year = int(movie["date"][:4]) if movie.get("date") else None
         movie_minutes = (movie.get("duration") or 0) / 60
         off = abs(movie_minutes - minutes) if movie_minutes and minutes else None
@@ -500,6 +508,7 @@ def check_plugin_pick(token, item, full, studio, name, label, provider, parts, s
     better = f"movies/{found['id']}" if found else None
     if not better or better.lower() == provider.lower():
         update_movie(item["Path"], matched_by="plugin-checked")
+        print(f"checked {label}: the plugin's pick stays", flush=True)
         return
     found_year = int(found["date"][:4]) if found.get("date") else None
     full["ProviderIds"] = {"ThePornDB": better}

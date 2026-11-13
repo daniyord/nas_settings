@@ -206,20 +206,24 @@ def find_tmdb_match(title, studio, year, minutes, keywords):
     texts = [title, *keywords] + ([f"{title} {' '.join(keywords)}"] if keywords else [])
     found = {}
     for query in {title.replace(" - ", ": "), title.split(" - ")[0], *texts}:
-        for movie in tmdb("search/movie", query=query, include_adult="true")["results"]:
-            found[movie["id"]] = movie
+        # A common title fills the first page with mainstream movies ("Girls Night" has 100+), so with the year
+        # known it is searched for within that year as well
+        for params in [{}] + ([{"year": year}] if year else []):
+            for movie in tmdb("search/movie", query=query, include_adult="true", **params)["results"]:
+                found[movie["id"]] = movie
     similar = []
     for movie in found.values():
         names = {movie["title"], movie.get("original_title") or movie["title"]}
         similarity = round(max(difflib.SequenceMatcher(None, norm(t), norm(n)).ratio() for t in texts for n in names), 2)
         if similarity >= MIN_SIMILARITY:
-            similar.append((similarity, movie["id"]))
+            same_year = bool(year) and (movie.get("release_date") or "")[:4] == str(year)
+            similar.append((similarity, same_year, movie["id"]))
     if not similar:
         return None, "no title match on TMDb", []
 
     scored = []
     candidates = []
-    for similarity, tmdb_id in sorted(similar, reverse=True)[:10]:
+    for similarity, _, tmdb_id in sorted(similar, reverse=True)[:10]:
         movie = tmdb_movie(tmdb_id)
         if not movie:
             continue

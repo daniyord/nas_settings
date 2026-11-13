@@ -511,7 +511,13 @@ def run_once():
         label = f"{studio}/{name}"
         # Right after a move Jellyfin still lists the old path; acting on it would create a record for a file that's gone
         if not os.path.isfile(item["Path"]):
-            record(item, studio, name, "pending", "waiting for Jellyfin to pick up the move")
+            # The database already follows the file into its tagged folder; showing the old path would show
+            # the movie without its match and history until Jellyfin catches up
+            moved = tagged_files(os.path.join(location, studio), filenames).get(parts[-1].lower())
+            if moved:
+                record({**item, "Path": moved}, studio, name, "matched", "moved, waiting for Jellyfin to pick up the new folder")
+            else:
+                record(item, studio, name, "pending", "waiting for Jellyfin to pick up the move")
             stale = min(stale, missing_since.setdefault(item["Id"], time.time()))
             continue
         # A file copied in again next to the folder its earlier copy was moved into would be matched and moved as

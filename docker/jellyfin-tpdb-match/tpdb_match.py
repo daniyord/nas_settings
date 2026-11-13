@@ -287,6 +287,10 @@ def identified_name(item, folder):
     title = re.sub(r"\s+", " ", re.sub(r'[<>:"/\\|?*]', " ", item.get("Name") or "")).strip(" .")
     if not title:
         title = re.sub(r"\s*\(\d{4}\)$", "", ID_TAG.sub("", folder).strip())
+    # ThePornDB lists some titles sorted, as "Ring, the"
+    article = re.fullmatch(r"(.+), (the|a|an)", title, re.I)
+    if article:
+        title = f"{article.group(2).capitalize()} {article.group(1)}"
     year = item.get("ProductionYear") or (re.search(r"\((\d{4})\)", folder) or [None, None])[1]
     return f"{title} ({year})" if year else title
 

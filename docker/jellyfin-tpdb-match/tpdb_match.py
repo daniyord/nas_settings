@@ -42,10 +42,14 @@ MAX_LOOKUPS_PER_RUN = 20
 STALE_RESCAN = 300
 SETTLE_AFTER = 120
 UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-# Like Jellyfin's [imdbid-tt...]: a ThePornDB id in a file or folder name pins the match, no search involved
-ID_TAG = re.compile(r"\s*\[tpdbid-(" + UUID + r")\]", re.I)
+# Like Jellyfin's [imdbid-tt...]: a ThePornDB (or TMDb) id in a file or folder name pins the match, no search involved
+ID_TAG = re.compile(r"\s*\[(tpdbid-" + UUID + r"|tmdbid-\d+)\]", re.I)
 # A keyword that is a ThePornDB movie link (uuid, slug or numeric id) or a bare uuid pins the match too
 TPDB_REF = re.compile(r"(?:https?://)?(?:www\.)?theporndb\.net/movies/([\w-]+)/?|(" + UUID + ")", re.I)
+TMDB_REF = re.compile(r"(?:https?://)?(?:www\.)?themoviedb\.org/movie/(\d+)[\w-]*/?(?:\?.*)?", re.I)
+# TMDb is the last resort, searched only when ThePornDB has nothing; unset turns it off. Either the v3
+# API key or the v4 read access token (a JWT)
+TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".mpg", ".mpeg", ".ts", ".webm"}
 
 # In memory only: rebuilt from Jellyfin and the database on every run
@@ -157,6 +161,116 @@ def tpdb_movie(token, ref):
         if e.code == 404:
             return None
         raise
+
+
+def tmdb(path, **params):
+    headers = {}
+    if TMDB_API_KEY.startswith("eyJ"):
+        headers["Authorization"] = f"Bearer {TMDB_API_KEY}"
+    else:
+        params["api_key"] = TMDB_API_KEY
+    return request(f"https://api.themoviedb.org/3/{path}?" + urllib.parse.urlencode({"language": "en-US", **params}), headers)
+
+
+def tmdb_movie(tmdb_id):
+    try:
+        return tmdb(f"movie/{tmdb_id}", append_to_response="credits")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
+# The id stored for a match and compared with folder tags: ThePornDB's provider id, or tmdb/<id>
+def tag_ref(tag):
+    kind, _, value = tag.group(1).lower().partition("-")
+    return f"movies/{value}" if kind == "tpdbid" else f"tmdb/{value}"
+
+
+def tmdb_candidate(movie, similarity):
+    companies = ", ".join(c["name"] for c in movie.get("production_companies", [])) or "?"
+    return {"title": movie["title"], "site": f"{companies} (TMDb)", "year": int(movie["release_date"][:4]) if movie.get("release_date") else None,
+            "minutes": movie.get("runtime") or None, "similarity": similarity}
+
+
+# TMDb has few adult movies and lists production companies rather than sites, so a match still has to name
+# the folder's studio among them: without that, a parody would match the mainstream movie of the same title
+def find_tmdb_match(title, studio, year, minutes, keywords):
+    texts = [title, *keywords] + ([f"{title} {' '.join(keywords)}"] if keywords else [])
+    found = {}
+    for query in {title.replace(" - ", ": "), title.split(" - ")[0], *texts}:
+        for movie in tmdb("search/movie", query=query, include_adult="true")["results"]:
+            found[movie["id"]] = movie
+    similar = []
+    for movie in found.values():
+        names = {movie["title"], movie.get("original_title") or movie["title"]}
+        similarity = round(max(difflib.SequenceMatcher(None, norm(t), norm(n)).ratio() for t in texts for n in names), 2)
+        if similarity >= MIN_SIMILARITY:
+            similar.append((similarity, movie["id"]))
+    if not similar:
+        return None, "no title match on TMDb", []
+
+    scored = []
+    candidates = []
+    for similarity, tmdb_id in sorted(similar, reverse=True)[:10]:
+        movie = tmdb_movie(tmdb_id)
+        if not movie:
+            continue
+        candidates.append(tmdb_candidate(movie, similarity))
+        movie_year = int(movie["release_date"][:4]) if movie.get("release_date") else None
+        off = abs(movie["runtime"] - minutes) if movie.get("runtime") and minutes else None
+        companies = movie.get("production_companies", [])
+        if any(same_studio(studio, c["name"]) for c in companies):
+            scored.append((similarity, movie_year, off, movie, True))
+        # Many adult entries on TMDb name no company at all; those can't be checked against the studio, so they
+        # need the exact title and a runtime that agrees instead
+        elif not companies and movie.get("adult") and similarity == 1 and off is not None and off <= MAX_RUNTIME_OFF_MINUTES:
+            scored.append((similarity, movie_year, off, movie, False))
+    candidates = candidates[:3]
+    if not scored:
+        return None, "no TMDb title match within the studio", candidates
+    if any(s[4] for s in scored):
+        scored = [s for s in scored if s[4]]
+    best_similarity = max(s[0] for s in scored)
+    scored = [s for s in scored if s[0] == best_similarity]
+    if year and any(s[1] == year for s in scored):
+        scored = [s for s in scored if s[1] == year]
+    scored.sort(key=lambda s: s[2] if s[2] is not None else float("inf"))
+    best = scored[0]
+    if best[2] is None:
+        return (best[3], None, []) if len(scored) == 1 else (None, f"{len(scored)} TMDb candidates and no runtime to tell them apart", candidates)
+    if best[2] > MAX_RUNTIME_OFF_MINUTES:
+        return None, f"TMDb runtime differs by {best[2]:.0f} min", candidates
+    if len(scored) > 1 and scored[1][2] is not None and scored[1][2] - best[2] < 5:
+        return None, f"{len(scored)} TMDb candidates with about the same runtime", candidates
+    return best[3], None, []
+
+
+# The library has only ThePornDB's metadata fetcher (TMDb's would search every movie by name), so a TMDb
+# match is written into the item here and locked, or the plugin's next refresh would search it by name again
+def apply_tmdb(item_id, full, movie):
+    full["Name"] = movie["title"]
+    full["OriginalTitle"] = movie.get("original_title") or movie["title"]
+    full["Overview"] = movie.get("overview") or ""
+    full["Taglines"] = [movie["tagline"]] if movie.get("tagline") else []
+    full["PremiereDate"] = f"{movie['release_date']}T00:00:00.0000000Z" if movie.get("release_date") else None
+    full["ProductionYear"] = int(movie["release_date"][:4]) if movie.get("release_date") else None
+    full["Genres"] = [g["name"] for g in movie.get("genres", [])]
+    full["Tags"] = []
+    full["Studios"] = [{"Name": n} for n in merged_studios([c["name"] for c in movie.get("production_companies", [])])]
+    full["CommunityRating"] = movie.get("vote_average") if movie.get("vote_count") else None
+    credits = movie.get("credits") or {}
+    full["People"] = [{"Name": p["name"], "Role": p.get("character") or "", "Type": "Actor"} for p in credits.get("cast", [])[:30]]
+    full["People"] += [{"Name": p["name"], "Type": "Director"} for p in credits.get("crew", []) if p.get("job") == "Director"]
+    full["ProviderIds"] = {"Tmdb": str(movie["id"]), **({"Imdb": movie["imdb_id"]} if movie.get("imdb_id") else {})}
+    full["LockData"] = True
+    jellyfin(f"/Items/{item_id}", "POST", full)
+    # Artwork from an earlier wrong match or a frame grab would otherwise stay next to the new one
+    for _ in full.get("BackdropImageTags") or []:
+        jellyfin(f"/Items/{item_id}/Images/Backdrop/0", "DELETE")
+    for kind, path in (("Primary", movie.get("poster_path")), ("Backdrop", movie.get("backdrop_path"))):
+        if path:
+            jellyfin(f"/Items/{item_id}/RemoteImages/Download", "POST", Type=kind, ImageUrl=f"https://image.tmdb.org/t/p/original{path}")
 
 
 def norm(text):
@@ -280,7 +394,7 @@ def folder_name(name, stem):
     return name
 
 
-# Gives a matched movie its own folder named "<Title (Year)> [tpdbid-<id>]": a movie lying directly in its
+# Gives a matched movie its own folder named "<Title (Year)> [tpdbid-<id>]" (or [tmdbid-<id>]): a movie lying directly in its
 # studio folder moves there with its sidecar files, a movie already alone in a folder has the tag appended
 # Folder name for a movie identified by hand: the file name may well be the wrong title, so Jellyfin's is used
 def identified_name(item, folder):
@@ -296,10 +410,12 @@ def identified_name(item, folder):
 
 
 def organize(item, parts, label):
-    provider = re.fullmatch(r"movies/(" + UUID + ")", item.get("ProviderIds", {}).get("ThePornDB", ""), re.I)
-    if not provider or not os.path.isfile(item["Path"]):
+    ids = item.get("ProviderIds", {})
+    provider = re.fullmatch(r"movies/(" + UUID + ")", ids.get("ThePornDB", ""), re.I)
+    key = f"tpdbid-{provider.group(1).lower()}" if provider else f"tmdbid-{ids['Tmdb']}" if ids.get("Tmdb") else None
+    if not key or not os.path.isfile(item["Path"]):
         return
-    tag = f"[tpdbid-{provider.group(1).lower()}]"
+    tag = f"[{key}]"
     folder, filename = os.path.split(item["Path"])
     stem = os.path.splitext(filename)[0]
 
@@ -310,7 +426,7 @@ def organize(item, parts, label):
         moves = [(item["Path"], os.path.join(target, filename))]
         moves += [(os.path.join(folder, n), os.path.join(target, folder_name(n, stem))) for n in sidecars(folder, stem)]
     elif len(parts) == 3 and ID_TAG.search(parts[1]):
-        if ID_TAG.search(parts[1]).group(1).lower() == provider.group(1).lower():
+        if ID_TAG.search(parts[1]).group(1).lower() == key:
             return
         source, target = folder, os.path.join(os.path.dirname(folder), f"{identified_name(item, parts[1])} {tag}")
         moves = [(folder, target)]
@@ -422,7 +538,7 @@ def run_once():
         # A tagged item is matched only once it points at the tagged id; retagging a folder re-points it. When the
         # folder still has the id last seen in Jellyfin but Jellyfin now has another one, the movie was identified
         # again by hand there, so the folder follows Jellyfin instead
-        tagged_id = f"movies/{tag.group(1).lower()}" if tag else None
+        tagged_id = tag_ref(tag) if tag else None
         identified = bool(tag and provider and row["tpdb_id"] and row["tpdb_id"].lower() == tagged_id and provider.lower() != tagged_id)
         if provider and (identified or (provider.lower() == tagged_id if tag else any(same_studio(studio, s["Name"]) for s in item.get("Studios", [])))):
             if identified:
@@ -445,6 +561,26 @@ def run_once():
             merge_studios(item, admin, label)
             # Counted from when this process first saw the item matched, as the plugin also identifies new
             # items on its own and is still writing their artwork right after
+            due = seen_matched_at.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
+            if time.time() > due:
+                organize(item, parts, label)
+            elif len(parts) == 2 or (len(parts) == 3 and not ID_TAG.search(parts[1])):
+                next_wake = min(next_wake, due)
+            continue
+        tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+        if not provider and tmdb_id and row["tpdb_id"] == f"tmdb/{tmdb_id}":
+            # The move gives the movie a new Jellyfin item that comes back unlocked and without its cast, so the
+            # metadata is written once more; only right after the move, so unlocking it later to edit by hand sticks
+            with lock:
+                last = db.execute("SELECT kind FROM events WHERE movie_id = ? ORDER BY at DESC, id DESC LIMIT 1", (row["id"],)).fetchone()
+            if TMDB_API_KEY and last and last["kind"] == "moved":
+                full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
+                found = None if full.get("LockData") else tmdb_movie(tmdb_id)
+                if found:
+                    apply_tmdb(item["Id"], full, found)
+                    event(item["Path"], "matched", f"{found['title']} (tmdb/{tmdb_id}, written again after the move)", label)
+            if current_state(item["Id"]) != "matched":
+                record(item, studio, name, "matched", item["Name"])
             due = seen_matched_at.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
             if time.time() > due:
                 organize(item, parts, label)
@@ -497,8 +633,19 @@ def run_once():
         keywords = json.loads(movie(item["Path"])["keywords"])
 
         refs = [m.group(1) or m.group(2) for k in keywords if (m := TPDB_REF.fullmatch(k.strip()))]
-        if tag or refs:
-            ref = tag.group(1) if tag else refs[0]
+        tmdb_refs = [m.group(1) for k in keywords if (m := TMDB_REF.fullmatch(k.strip()))]
+        on_tmdb = False
+        if (tag and tag_ref(tag).startswith("tmdb/")) or (not tag and not refs and tmdb_refs):
+            on_tmdb = True
+            ref = tag_ref(tag)[len("tmdb/"):] if tag else tmdb_refs[0]
+            matched_by = "tmdb-tag" if tag else "tmdb-link"
+            found, reason, candidates = None, "TMDB_API_KEY is not set", []
+            if TMDB_API_KEY:
+                found, reason = tmdb_movie(ref), None
+                if not found:
+                    reason = f"TMDb has no movie {ref}"
+        elif tag or refs:
+            ref = tag_ref(tag)[len("movies/"):] if tag else refs[0]
             matched_by = "tag" if tag else "link"
             found, reason, candidates = tpdb_movie(token, ref), None, []
             if not found:
@@ -506,17 +653,28 @@ def run_once():
         else:
             matched_by = "keywords" if keywords else "title"
             found, reason, candidates = find_match(token, title, studio, year, minutes, keywords, studio_sites(token, studio, sites_cache))
+            if not found and TMDB_API_KEY:
+                tmdb_found, tmdb_reason, tmdb_candidates = find_tmdb_match(title, studio, year, minutes, keywords)
+                if tmdb_found:
+                    found, on_tmdb, matched_by = tmdb_found, True, "tmdb"
+                else:
+                    reason, candidates = f"{reason}; {tmdb_reason}", candidates + tmdb_candidates
         if not found:
             update_movie(item["Path"], skipped_at=time.time(), skip_reason=reason, candidates=json.dumps(candidates, ensure_ascii=False))
             event(item["Path"], "skipped", reason, label)
             record(item, studio, name, "skipped", reason, candidates)
             continue
 
-        provider = f"movies/{found['id']}"
-        full["ProviderIds"] = {"ThePornDB": provider}
-        jellyfin(f"/Items/{item['Id']}", "POST", full)
-        jellyfin(f"/Items/{item['Id']}/Refresh", "POST", MetadataRefreshMode="FullRefresh", ImageRefreshMode="FullRefresh", ReplaceAllMetadata="true", ReplaceAllImages="true")
-        match = f"{found['title']} ({found['site']['name']}, {(found.get('date') or '')[:4]})"
+        if on_tmdb:
+            provider = f"tmdb/{found['id']}"
+            apply_tmdb(item["Id"], full, found)
+            match = f"{found['title']} (TMDb, {(found.get('release_date') or '')[:4]})"
+        else:
+            provider = f"movies/{found['id']}"
+            full["ProviderIds"] = {"ThePornDB": provider}
+            jellyfin(f"/Items/{item['Id']}", "POST", full)
+            jellyfin(f"/Items/{item['Id']}/Refresh", "POST", MetadataRefreshMode="FullRefresh", ImageRefreshMode="FullRefresh", ReplaceAllMetadata="true", ReplaceAllImages="true")
+            match = f"{found['title']} ({found['site']['name']}, {(found.get('date') or '')[:4]})"
         update_movie(item["Path"], tpdb_id=provider, matched_at=time.time(), matched_by=matched_by, skipped_at=None, skip_reason=None, candidates="[]")
         event(item["Path"], "matched", f"{match} ({provider}, by {matched_by})", label)
         seen_matched_at[item["Id"]] = time.time()

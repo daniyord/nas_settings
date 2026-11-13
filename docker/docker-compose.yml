@@ -36,6 +36,8 @@ services:
       LIBRARY: Порно
       # Studios whose ThePornDB variants ("Wicked Pictures", ...) are merged into this one name
       MERGE_STUDIOS: Wicked
+      # Last resort when ThePornDB has nothing; empty turns TMDb off
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
     volumes:
       # Per-file keywords entered on the status page
       - /volume1/ServerConfigurations/JellyfinTpdbMatch:/data

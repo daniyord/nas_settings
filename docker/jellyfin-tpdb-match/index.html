@@ -181,6 +181,7 @@ const histories = new Map();
 const MATCHED_BY = {
   title: "по заглавие", keywords: "по ключови думи", link: "по линк", tag: "по таг в папката",
   plugin: "от plugin-а", jellyfin: "ръчно в Jellyfin", unknown: "преди историята",
+  tmdb: "в TMDb по заглавие", "tmdb-link": "по линк към TMDb", "tmdb-tag": "по TMDb таг в папката",
 };
 const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат", deleted: "Изтрит" };
 
@@ -361,7 +362,7 @@ function retryControls(item) {
   const input = el("input", {
     type: "text",
     value: drafts.get(item.id) ?? item.keywords.join(`${KEYWORD_SEP} `),
-    placeholder: "Ключови думи, точно заглавие или линк към ThePornDB, разделени с ;",
+    placeholder: "Ключови думи, точно заглавие или линк към ThePornDB / TMDb, разделени с ;",
   });
   input.oninput = () => drafts.set(item.id, input.value);
   const msg = el("span", { className: "msg" });

@@ -124,6 +124,17 @@ td.history li { margin: 2px 0; }
 .retry button { white-space: nowrap; padding: 4px 10px; }
 .retry .msg { color: var(--error); font-size: 13px; align-self: center; }
 .retry button.danger { color: var(--error); border-color: var(--error); }
+.now { margin: 0 0 10px; color: var(--ink); min-height: 1.4em; }
+.now.idle { color: var(--muted); }
+.now .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--matched); margin-right: 8px; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .now .dot { animation: none; } }
+.log { list-style: none; margin: 0; padding: 8px 10px; max-height: 280px; overflow: auto; background: var(--page);
+  border: 1px solid var(--grid); border-radius: 6px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.log li { white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
+.log .time { color: var(--muted); }
+.log .kind { font-weight: 600; }
+.log .empty { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -133,6 +144,12 @@ td.history li { margin: 2px 0; }
     <p class="sub" id="run">Зареждане…</p>
     <button type="button" id="run-now">Пусни сега</button>
   </div>
+
+  <section class="card">
+    <h2>В момента</h2>
+    <p class="now idle" id="now"></p>
+    <ol class="log" id="log"><li class="empty">Още няма събития от последния старт на услугата.</li></ol>
+  </section>
 
   <div class="tiles" id="tiles"></div>
 
@@ -475,14 +492,64 @@ document.getElementById("run-now").onclick = async e => {
     await fetch("api/run", { method: "POST" });
   } finally {
     pollFast();
+    pollActivity();
   }
 };
 document.getElementById("more").onclick = () => { showAllStudios = !showAllStudios; renderChart(); };
 document.getElementById("search").addEventListener("input", () => { tableLimit = PAGE; renderTable(); });
 document.getElementById("table-more").onclick = () => { tableLimit += PAGE; renderTable(); };
 
+// The live panel: what the matcher is doing right now and what it did lately, polled every second during a run
+const LOG_KIND = {
+  matched: ["Match", "matched"], skipped: ["Без match", "skipped"], moved: ["Преместен", null], removed: ["Изтрит остатък", null],
+  checked: ["Проверен", null], poster: ["Постер", "tmdb"], studios: ["Студиа", null],
+  duplicate: ["Дубликат", "duplicate"], deleted: ["Изтрит", null], error: ["Грешка", "error"], rescan: ["Опресняване", null],
+  organize: ["Не е преместен", "skipped"], wait: ["Изчаква", "skipped"], retry: ["Нов опит", null],
+};
+let logSeq = 0;
+let activityTimer = null;
+let lastTableRefresh = 0;
+function renderLogLine(a) {
+  const [word, ...rest] = a.text.split(" ");
+  const [label, color] = LOG_KIND[word] || [word, null];
+  const kind = el("span", { className: "kind", textContent: label });
+  if (color) kind.style.color = `var(--${color})`;
+  return el("li", {}, el("span", { className: "time", textContent: new Date(a.at * 1000).toLocaleTimeString("bg-BG") + " " }), kind, " " + rest.join(" "));
+}
+async function pollActivity() {
+  let running = false;
+  try {
+    const res = await (await fetch(`api/activity?after=${logSeq}`)).json();
+    const run = res.run;
+    running = run.started && (!run.finished || run.finished < run.started);
+    const now = document.getElementById("now");
+    now.className = running ? "now" : "now idle";
+    now.replaceChildren(...(running
+      ? [el("span", { className: "dot" }), run.current || "работи…", run.queued ? ` · в опашката: ${run.queued}` : ""]
+      : [run.finished ? `Чака следващото минаване (последно: ${fmtTime(run.finished)}).` : "Чака първото минаване."]));
+    if (res.lines.length) {
+      const log = document.getElementById("log");
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+      log.querySelector(".empty")?.remove();
+      log.append(...res.lines.map(renderLogLine));
+      while (log.children.length > 300) log.firstChild.remove();
+      if (atBottom) log.scrollTop = log.scrollHeight;
+      logSeq = res.lines[res.lines.length - 1].seq;
+      // Matches and moves change the table, so it follows along instead of waiting for the 30s refresh
+      if (res.lines.some(a => /^(matched|moved|skipped|removed|poster|deleted) /.test(a.text)) && Date.now() - lastTableRefresh > 5000) {
+        lastTableRefresh = Date.now();
+        refresh();
+      }
+    }
+    if (data.run && JSON.stringify(data.run) !== JSON.stringify(run)) { data.run = run; renderRun(); }
+  } catch (e) { }
+  clearTimeout(activityTimer);
+  activityTimer = setTimeout(pollActivity, running ? 1000 : 5000);
+}
+
 refresh();
 setInterval(refresh, 30000);
+pollActivity();
 </script>
 </body>
 </html>

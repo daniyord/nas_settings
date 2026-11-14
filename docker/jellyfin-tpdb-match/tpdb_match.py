@@ -7,6 +7,7 @@
 # What can't be rebuilt from Jellyfin (when and how a movie was matched, skips, keywords and the
 # history of every action) lives in a SQLite database in DATA_DIR.
 
+import collections
 import difflib
 import json
 import os
@@ -63,7 +64,10 @@ last_rescan = [0.0]
 priority = set()
 lock = threading.RLock()
 wake = threading.Event()
-last_run = {"started": None, "finished": None, "error": None, "interval": INTERVAL, "queued": 0}
+last_run = {"started": None, "finished": None, "error": None, "interval": INTERVAL, "queued": 0, "current": None}
+# What the matcher did lately, shown live on the status page
+activity = collections.deque(maxlen=500)
+activity_seq = [0]
 
 os.makedirs(DATA_DIR, exist_ok=True)
 db = sqlite3.connect(os.path.join(DATA_DIR, "state.db"), check_same_thread=False, isolation_level=None)
@@ -118,8 +122,20 @@ def update_movie(path, **fields):
         db.execute(f"UPDATE movies SET {', '.join(f'{k} = ?' for k in fields)} WHERE path = ?", (*fields.values(), path))
 
 
+def log(text):
+    print(text, flush=True)
+    with lock:
+        activity_seq[0] += 1
+        activity.append({"seq": activity_seq[0], "at": time.time(), "text": text})
+
+
+# Shown on the status page only, so in its language
+def step(text):
+    last_run["current"] = text
+
+
 def event(path, kind, detail, label):
-    print(f"{kind} {label}: {detail}", flush=True)
+    log(f"{kind} {label}: {detail}")
     with lock:
         db.execute("INSERT INTO events (movie_id, at, kind, detail) VALUES (?, ?, ?, ?)", (movie(path)["id"], time.time(), kind, detail))
 
@@ -140,16 +156,20 @@ import_keywords_json()
 def request(url, headers, method="GET", body=None):
     data = None if body is None else json.dumps(body).encode()
     headers = {**headers, "Accept": "application/json", "Content-Type": "application/json", "User-Agent": "jellyfin-tpdb-match"}
-    for attempt in range(6):
+    # Few and short retries: when ThePornDB is struggling a lookup fails within a minute and the movie waits for
+    # the next run, rather than holding up all the others for many minutes
+    for attempt in range(4):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, data, headers, method=method), timeout=60) as response:
                 raw = response.read()
             return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
-            if e.code not in (429, 502, 503, 504) or attempt == 5:
+            if e.code not in (429, 502, 503, 504) or attempt == 3:
                 raise
             retry_after = e.headers.get("Retry-After", "")
-            time.sleep(int(retry_after) if retry_after.isdigit() else 2 ** attempt * 5)
+            wait = int(retry_after) if retry_after.isdigit() else 2 ** attempt * 5
+            log(f"wait {urllib.parse.urlparse(url).hostname} answered {e.code}, trying again in {wait}s")
+            time.sleep(wait)
 
 
 def jellyfin(path, method="GET", body=None, **params):
@@ -307,6 +327,8 @@ def find_match(token, title, studio, year, minutes, keywords, sites):
     texts = [title, *keywords] + ([f"{title} {' '.join(keywords)}"] if keywords else [])
     found = {}
     queries = {title.replace(" - ", ": "), title.split(" - ")[0], *texts}
+    # ThePornDB's search doesn't treat "&" and "and" alike: "Naughty And Nice" misses "Naughty & Nice"
+    queries |= {re.sub(r"\s+and\s+", " & ", q, flags=re.I) for q in queries} | {q.replace(" & ", " and ") for q in queries}
     # The search across all of ThePornDB is only a fallback for sites named unlike the studio: it takes up to
     # minutes where a search within one site takes a second
     for params in [[{"q": q, "site": site} for q in queries for site in sites], [{"q": q} for q in queries]]:
@@ -459,7 +481,7 @@ def organize(item, parts, label):
     else:
         return
     if os.path.exists(target):
-        print(f"organize {label}: {target} already exists", flush=True)
+        log(f"organize {label}: {target} already exists")
         return
 
     if len(parts) == 2:
@@ -510,7 +532,7 @@ def remove_leftovers(studio_dir, tagged):
         if not stem or stem in in_place or stem not in moved or not os.path.isfile(path):
             continue
         os.remove(path)
-        print(f"removed {os.path.basename(studio_dir)}/{name}: left behind after the move into {os.path.basename(os.path.dirname(moved[stem]))}/", flush=True)
+        log(f"removed {os.path.basename(studio_dir)}/{name}: left behind after the move into {os.path.basename(os.path.dirname(moved[stem]))}/")
 
 
 def record(item, studio, name, state, detail, candidates=()):
@@ -536,7 +558,7 @@ def check_plugin_pick(token, item, full, studio, name, label, provider, parts, s
     better = f"movies/{found['id']}" if found else None
     if not better or better.lower() == provider.lower():
         update_movie(item["Path"], matched_by="plugin-checked")
-        print(f"checked {label}: the plugin's pick stays", flush=True)
+        log(f"checked {label}: the plugin's pick stays")
         return
     found_year = int(found["date"][:4]) if found.get("date") else None
     full["ProviderIds"] = {"ThePornDB": better}
@@ -570,6 +592,7 @@ def check_poster(token, item, full, studio, label, provider):
 
 
 def run_once():
+    step("чете библиотеката от Jellyfin")
     plugin = next(p for p in jellyfin("/Plugins") if p["Name"] == "ThePornDB")
     token = jellyfin(f"/Plugins/{plugin['Id']}/Configuration")["MetadataAPIToken"]
     admin = next(u for u in jellyfin("/Users") if u["Policy"]["IsAdministrator"])
@@ -578,6 +601,7 @@ def run_once():
     backfill = not meta("history_since")
 
     items = jellyfin("/Items", ParentId=library["ItemId"], Recursive="true", IncludeItemTypes="Movie", Fields="Path,ProviderIds,Studios", Limit=100000)["Items"]
+    step(f"преглежда {len(items)} филма в библиотеката")
     # Classify everything first so the status page shows the whole library before the slow ThePornDB lookups
     todo = []
     next_wake = float("inf")
@@ -708,7 +732,7 @@ def run_once():
         del missing_since[gone]
     if time.time() - stale > STALE_RESCAN and time.time() - last_rescan[0] > STALE_RESCAN:
         last_rescan[0] = time.time()
-        print("rescan: Jellyfin still lists moved files at their old paths", flush=True)
+        log("rescan: Jellyfin still lists moved files at their old paths")
         jellyfin(f"/Items/{library['ItemId']}/Refresh", "POST", Recursive="true", MetadataRefreshMode="Default", ImageRefreshMode="Default")
     if stale < float("inf"):
         next_wake = min(next_wake, max(stale, last_rescan[0]) + STALE_RESCAN)
@@ -736,15 +760,20 @@ def run_once():
             if lookups == MAX_LOOKUPS_PER_RUN:
                 return time.time()
             lookups += 1
-            if check[0] == "plugin":
-                check_plugin_pick(token, item, full, studio, name, label, *check[1:], sites_cache)
-            else:
-                check_poster(token, item, full, studio, label, check[1])
+            step(f"{label}: проверява избора на plugin-а в ThePornDB" if check[0] == "plugin" else f"{label}: търси постер")
+            try:
+                if check[0] == "plugin":
+                    check_plugin_pick(token, item, full, studio, name, label, *check[1:], sites_cache)
+                else:
+                    check_poster(token, item, full, studio, label, check[1])
+            except (urllib.error.URLError, TimeoutError) as e:
+                log(f"error {label}: {e!r}; tried again on the next run")
             continue
         if lookups == MAX_LOOKUPS_PER_RUN:
             return time.time()
         lookups += 1
         priority.discard(item["Path"])
+        step(f"{label}: търси в ThePornDB")
 
         year_match = re.search(r"\((\d{4})\)\s*$", name)
         year = int(year_match.group(1)) if year_match else None
@@ -752,33 +781,39 @@ def run_once():
         minutes = (full.get("RunTimeTicks") or 0) / 600_000_000
         keywords = json.loads(movie(item["Path"])["keywords"])
 
-        refs = [m.group(1) or m.group(2) for k in keywords if (m := TPDB_REF.fullmatch(k.strip()))]
-        tmdb_refs = [m.group(1) for k in keywords if (m := TMDB_REF.fullmatch(k.strip()))]
-        on_tmdb = False
-        if (tag and tag_ref(tag).startswith("tmdb/")) or (not tag and not refs and tmdb_refs):
-            on_tmdb = True
-            ref = tag_ref(tag)[len("tmdb/"):] if tag else tmdb_refs[0]
-            matched_by = "tmdb-tag" if tag else "tmdb-link"
-            found, reason, candidates = None, "TMDB_API_KEY is not set", []
-            if TMDB_API_KEY:
-                found, reason = tmdb_movie(ref), None
+        # A database failing leaves the movie for the next run instead of ending this one
+        try:
+            refs = [m.group(1) or m.group(2) for k in keywords if (m := TPDB_REF.fullmatch(k.strip()))]
+            tmdb_refs = [m.group(1) for k in keywords if (m := TMDB_REF.fullmatch(k.strip()))]
+            on_tmdb = False
+            if (tag and tag_ref(tag).startswith("tmdb/")) or (not tag and not refs and tmdb_refs):
+                on_tmdb = True
+                ref = tag_ref(tag)[len("tmdb/"):] if tag else tmdb_refs[0]
+                matched_by = "tmdb-tag" if tag else "tmdb-link"
+                found, reason, candidates = None, "TMDB_API_KEY is not set", []
+                if TMDB_API_KEY:
+                    found, reason = tmdb_movie(ref), None
+                    if not found:
+                        reason = f"TMDb has no movie {ref}"
+            elif tag or refs:
+                ref = tag_ref(tag)[len("movies/"):] if tag else refs[0]
+                matched_by = "tag" if tag else "link"
+                found, reason, candidates = tpdb_movie(token, ref), None, []
                 if not found:
-                    reason = f"TMDb has no movie {ref}"
-        elif tag or refs:
-            ref = tag_ref(tag)[len("movies/"):] if tag else refs[0]
-            matched_by = "tag" if tag else "link"
-            found, reason, candidates = tpdb_movie(token, ref), None, []
-            if not found:
-                reason = f"ThePornDB has no movie {ref}"
-        else:
-            matched_by = "keywords" if keywords else "title"
-            found, reason, candidates = find_match(token, title, studio, year, minutes, keywords, studio_sites(token, studio, sites_cache))
-            if not found and TMDB_API_KEY:
-                tmdb_found, tmdb_reason, tmdb_candidates = find_tmdb_match(title, studio, year, minutes, keywords)
-                if tmdb_found:
-                    found, on_tmdb, matched_by = tmdb_found, True, "tmdb"
-                else:
-                    reason, candidates = f"{reason}; {tmdb_reason}", candidates + tmdb_candidates
+                    reason = f"ThePornDB has no movie {ref}"
+            else:
+                matched_by = "keywords" if keywords else "title"
+                found, reason, candidates = find_match(token, title, studio, year, minutes, keywords, studio_sites(token, studio, sites_cache))
+                if not found and TMDB_API_KEY:
+                    step(f"{label}: няма го в ThePornDB, търси в TMDb")
+                    tmdb_found, tmdb_reason, tmdb_candidates = find_tmdb_match(title, studio, year, minutes, keywords)
+                    if tmdb_found:
+                        found, on_tmdb, matched_by = tmdb_found, True, "tmdb"
+                    else:
+                        reason, candidates = f"{reason}; {tmdb_reason}", candidates + tmdb_candidates
+        except (urllib.error.URLError, TimeoutError) as e:
+            log(f"error {label}: {e!r}; tried again on the next run")
+            continue
         if not found:
             update_movie(item["Path"], skipped_at=time.time(), skip_reason=reason, candidates=json.dumps(candidates, ensure_ascii=False))
             event(item["Path"], "skipped", reason, label)
@@ -814,9 +849,10 @@ def matcher_loop():
             next_wake = run_once()
             last_run["error"] = None
         except Exception as e:
-            print(f"error: {e!r}", flush=True)
+            log(f"error: {e!r}")
             last_run["error"] = repr(e)
         last_run["finished"] = time.time()
+        last_run["current"] = None
         # Wake early for a movie waiting to be moved or a queue left over, rather than after a full interval
         wake.wait(max(1, min(INTERVAL, next_wake - time.time() + 1)))
 
@@ -847,6 +883,13 @@ def api_status():
                 "matched_by": row["matched_by"] if row and s["state"] == "matched" else None,
             })
     return {"run": last_run, "items": items}
+
+
+@app.get("/api/activity")
+def api_activity(after: int = 0):
+    with lock:
+        lines = [a for a in activity if a["seq"] > after]
+    return {"run": last_run, "lines": lines}
 
 
 @app.get("/api/items/{item_id}/history")

@@ -68,6 +68,8 @@ last_rescan = [0.0]
 priority = set()
 lock = threading.RLock()
 wake = threading.Event()
+# Folder name -> the name Jellyfin shows for that studio ("Adam&Eve" -> "Adam & Eve"), from the library's movies
+studio_names = {}
 last_run = {"started": None, "finished": None, "error": None, "interval": INTERVAL, "queued": 0, "current": None}
 # What the matcher did lately, shown live on the status page
 activity = collections.deque(maxlen=500)
@@ -299,7 +301,7 @@ def find_tmdb_match(title, studio, year, minutes, keywords):
 
 # The library has only ThePornDB's metadata fetcher (TMDb's would search every movie by name), so a TMDb
 # match is written into the item here and locked, or the plugin's next refresh would search it by name again
-def apply_tmdb(item_id, full, movie):
+def apply_tmdb(item_id, full, movie, studio):
     full["Name"] = movie["title"]
     full["OriginalTitle"] = movie.get("original_title") or movie["title"]
     full["Overview"] = movie.get("overview") or ""
@@ -308,7 +310,7 @@ def apply_tmdb(item_id, full, movie):
     full["ProductionYear"] = int(movie["release_date"][:4]) if movie.get("release_date") else None
     full["Genres"] = [g["name"] for g in movie.get("genres", [])]
     full["Tags"] = []
-    full["Studios"] = [{"Name": n} for n in merged_studios([c["name"] for c in movie.get("production_companies", [])])]
+    full["Studios"] = [{"Name": n} for n in with_folder_studio(merged_studios([c["name"] for c in movie.get("production_companies", [])]), studio)]
     full["CommunityRating"] = movie.get("vote_average") if movie.get("vote_count") else None
     credits = movie.get("credits") or {}
     full["People"] = [{"Name": p["name"], "Role": p.get("character") or "", "Type": "Actor"} for p in credits.get("cast", [])[:30]]
@@ -425,9 +427,9 @@ def merged_studios(names):
 
 
 # Locks the field, or the next metadata refresh would bring the plugin's site names back
-def merge_studios(item, admin, label):
+def merge_studios(item, admin, label, studio):
     names = [s["Name"] for s in item.get("Studios", [])]
-    merged = merged_studios(names)
+    merged = with_folder_studio(merged_studios(names), studio)
     if merged == names:
         return
     full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
@@ -436,7 +438,15 @@ def merge_studios(item, admin, label):
     full["Studios"] = [{"Name": n} for n in merged]
     full["LockedFields"] = sorted(set(full.get("LockedFields") or []) | {"Studios"})
     jellyfin(f"/Items/{item['Id']}", "POST", full)
-    event(item["Path"], "studios", f"{', '.join(names)} -> {', '.join(merged)}", label)
+    event(item["Path"], "studios", f"{', '.join(names) or 'none'} -> {', '.join(merged)}", label)
+
+
+# A movie is listed under the studio of its folder too, even when its database names only the label it came out
+# under ("Axel Braun Productions" for a Wicked parody), so browsing a studio in Jellyfin shows the whole folder
+def with_folder_studio(names, studio):
+    if any(same_studio(studio, n) for n in names):
+        return names
+    return names + [studio_names.get(studio, studio)]
 
 
 def sidecars(folder, stem):
@@ -727,6 +737,13 @@ def run_once():
 
     items = jellyfin("/Items", ParentId=library["ItemId"], Recursive="true", IncludeItemTypes="Movie", Fields="Path,ProviderIds,Studios", Limit=100000)["Items"]
     step(f"преглежда {len(items)} филма в библиотеката")
+    seen_names = collections.defaultdict(collections.Counter)
+    for item in items:
+        location = next((l for l in library["Locations"] if item["Path"].startswith(l.rstrip("/") + "/")), None)
+        if location:
+            folder = item["Path"][len(location.rstrip("/")) + 1:].split("/")[0]
+            seen_names[folder].update(n for n in merged_studios([s["Name"] for s in item.get("Studios", [])]) if same_studio(folder, n))
+    studio_names.update({folder: names.most_common(1)[0][0] for folder, names in seen_names.items() if names})
     # Classify everything first so the status page shows the whole library before the slow ThePornDB lookups
     todo = []
     next_wake = float("inf")
@@ -810,7 +827,7 @@ def run_once():
             if movie(item["Path"])["matched_by"] == "plugin" and item.get("RunTimeTicks"):
                 todo.append((item, studio, name, label, tag, ("plugin", provider, parts)))
                 continue
-            merge_studios(item, admin, label)
+            merge_studios(item, admin, label, studio)
             # Counted from when this process first saw the item matched, as the plugin also identifies new
             # items on its own and is still writing their artwork right after
             due = seen_matched_at.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
@@ -832,7 +849,7 @@ def run_once():
                 full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
                 found = None if full.get("LockData") else tmdb_movie(tmdb_id)
                 if found:
-                    apply_tmdb(item["Id"], full, found)
+                    apply_tmdb(item["Id"], full, found, studio)
                     event(item["Path"], "matched", f"{found['title']} (tmdb/{tmdb_id}, written again after the move)", label)
             if current_state(item["Id"]) != "matched":
                 record(item, studio, name, "matched", item["Name"])
@@ -955,7 +972,7 @@ def run_once():
 
         if on_tmdb:
             provider = f"tmdb/{found['id']}"
-            apply_tmdb(item["Id"], full, found)
+            apply_tmdb(item["Id"], full, found, studio)
             match = f"{found['title']} (TMDb, {(found.get('release_date') or '')[:4]})"
         else:
             provider = f"movies/{found['id']}"

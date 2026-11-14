@@ -493,6 +493,26 @@ def tagged_files(studio_dir, cache):
     return cache[studio_dir]
 
 
+LEFTOVER = re.compile(r"(.+?)(?:-(?:poster|backdrop\d*|fanart\d*|logo|clearlogo|thumb|banner|landscape|clearart|disc|discart)\.(?:jpe?g|png|webp)|\.nfo)", re.I)
+
+
+# Jellyfin at times finishes writing a movie's NFO and artwork after it was moved into its tagged folder, at the
+# old path in the studio folder; those copies are removed once the video is gone from there and found in a tagged
+# folder. Subtitles are left alone, as they may have been added by hand after the move
+def remove_leftovers(studio_dir, tagged):
+    names = os.listdir(studio_dir)
+    in_place = {os.path.splitext(n)[0].lower() for n in names if os.path.splitext(n)[1].lower() in VIDEO_EXTS}
+    moved = {os.path.splitext(n)[0]: path for n, path in tagged.items()}
+    for name in names:
+        leftover = LEFTOVER.fullmatch(name)
+        stem = leftover and leftover.group(1).lower()
+        path = os.path.join(studio_dir, name)
+        if not stem or stem in in_place or stem not in moved or not os.path.isfile(path):
+            continue
+        os.remove(path)
+        print(f"removed {os.path.basename(studio_dir)}/{name}: left behind after the move into {os.path.basename(os.path.dirname(moved[stem]))}/", flush=True)
+
+
 def record(item, studio, name, state, detail, candidates=()):
     with lock:
         status[item["Id"]] = {
@@ -676,6 +696,11 @@ def run_once():
             record(item, studio, name, "pending", "waiting for the matcher")
         todo.append((item, studio, name, label, tag, None))
 
+    for location in filter(os.path.isdir, library["Locations"]):
+        for studio in os.listdir(location):
+            studio_dir = os.path.join(location, studio)
+            if os.path.isdir(studio_dir):
+                remove_leftovers(studio_dir, tagged_files(studio_dir, filenames))
     if backfill:
         meta("history_since", str(time.time()))
     # Jellyfin sometimes keeps a moved movie at its old path, showing artwork that's gone, until the library is rescanned

@@ -552,6 +552,7 @@ const LOG_KIND = {
   organize: ["Не е преместен", "skipped"], manual: ["Ръчно", "matched"], wait: ["Изчаква", "skipped"], retry: ["Нов опит", null],
 };
 let logSeq = 0;
+let logBoot = null;
 let activityTimer = null;
 let lastTableRefresh = 0;
 function renderLogLine(a) {
@@ -564,7 +565,16 @@ function renderLogLine(a) {
 async function pollActivity() {
   let running = false;
   try {
-    const res = await (await fetch(`api/activity?after=${logSeq}`)).json();
+    let res = await (await fetch(`api/activity?after=${logSeq}`)).json();
+    // After a restart of the service its lines are numbered from 1 again, so the log starts over
+    if (logBoot !== res.boot) {
+      if (logBoot !== null) {
+        logSeq = 0;
+        document.getElementById("log").replaceChildren();
+        res = await (await fetch("api/activity?after=0")).json();
+      }
+      logBoot = res.boot;
+    }
     const run = res.run;
     running = run.started && (!run.finished || run.finished < run.started);
     const now = document.getElementById("now");

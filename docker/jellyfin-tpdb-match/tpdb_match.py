@@ -72,6 +72,8 @@ last_run = {"started": None, "finished": None, "error": None, "interval": INTERV
 # What the matcher did lately, shown live on the status page
 activity = collections.deque(maxlen=500)
 activity_seq = [0]
+# The numbering above starts over with every start; the page compares this to know its last line is stale
+BOOT = str(time.time())
 
 os.makedirs(DATA_DIR, exist_ok=True)
 db = sqlite3.connect(os.path.join(DATA_DIR, "state.db"), check_same_thread=False, isolation_level=None)
@@ -155,6 +157,19 @@ def import_keywords_json():
 
 
 import_keywords_json()
+
+
+# The live panel starts from the latest events on record rather than empty after a restart
+def seed_activity():
+    rows = db.execute("SELECT e.at, e.kind, e.detail, m.path FROM events e JOIN movies m ON m.id = e.movie_id ORDER BY e.at DESC, e.id DESC LIMIT 200").fetchall()
+    for row in reversed(rows):
+        folder, filename = os.path.split(row["path"])
+        studio = os.path.basename(os.path.dirname(folder) if ID_TAG.search(os.path.basename(folder)) else folder)
+        activity_seq[0] += 1
+        activity.append({"seq": activity_seq[0], "at": row["at"], "text": f"{row['kind']} {studio}/{os.path.splitext(filename)[0]}: {row['detail']}"})
+
+
+seed_activity()
 
 
 def request(url, headers, method="GET", body=None):
@@ -685,13 +700,19 @@ def fill_by_hand(entry, at):
 
 def check_poster(token, item, full, studio, label, provider):
     picked = tpdb_movie(token, provider.split("/", 1)[1])
-    if picked and not has_cover(picked) and TMDB_API_KEY:
+    if not picked or has_cover(picked):
+        log(f"checked {label}: ThePornDB has its cover")
+    elif not TMDB_API_KEY:
+        log(f"checked {label}: no cover on ThePornDB, and TMDb is off")
+    else:
         year = int(picked["date"][:4]) if picked.get("date") else None
         minutes = (full.get("RunTimeTicks") or 0) / 600_000_000
         found, _, _ = find_tmdb_match(picked["title"], studio, year, minutes, [])
         if found and found.get("poster_path"):
             jellyfin(f"/Items/{item['Id']}/RemoteImages/Download", "POST", Type="Primary", ImageUrl=f"https://image.tmdb.org/t/p/original{found['poster_path']}")
             event(item["Path"], "poster", f"from TMDb, as ThePornDB has none ({found['title']}, tmdb/{found['id']})", label)
+        else:
+            log(f"checked {label}: no cover on ThePornDB nor TMDb")
     update_movie(item["Path"], poster_checked=provider)
 
 
@@ -1001,7 +1022,7 @@ def api_status():
 def api_activity(after: int = 0):
     with lock:
         lines = [a for a in activity if a["seq"] > after]
-    return {"run": last_run, "lines": lines}
+    return {"run": last_run, "lines": lines, "boot": BOOT}
 
 
 @app.get("/api/items/{item_id}/history")

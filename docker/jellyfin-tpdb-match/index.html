@@ -124,6 +124,11 @@ td.history li { margin: 2px 0; }
 .retry button { white-space: nowrap; padding: 4px 10px; }
 .retry .msg { color: var(--error); font-size: 13px; align-self: center; }
 .retry button.danger { color: var(--error); border-color: var(--error); }
+.byhand { margin-top: 6px; }
+.byhand .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+.byhand img { display: block; width: 180px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 4px; background: var(--grid); margin-top: 6px; }
+.byhand input[type=range] { width: 180px; }
+.byhand .msg { color: var(--error); font-size: 13px; }
 .now { margin: 0 0 10px; color: var(--ink); min-height: 1.4em; }
 .now.idle { color: var(--muted); }
 .now .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--matched); margin-right: 8px; animation: pulse 1s ease-in-out infinite; }
@@ -204,7 +209,7 @@ const MATCHED_BY = {
   plugin: "от plugin-а", "plugin-checked": "от plugin-а, проверен", locked: "ръчно, заключен", jellyfin: "ръчно в Jellyfin", unknown: "преди историята",
   tmdb: "в TMDb по заглавие", "tmdb-link": "по линк към TMDb", "tmdb-tag": "по TMDb таг в папката",
 };
-const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат", deleted: "Изтрит", poster: "Постер" };
+const EVENT_KIND = { manual: "Ръчно", matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат", deleted: "Изтрит", poster: "Постер" };
 
 const el = (tag, props = {}, ...children) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -332,7 +337,8 @@ function renderTable() {
   const rows = items.slice(0, tableLimit).flatMap(i => {
     const s = byKey[i.state] || { label: i.state, icon: "" };
     const detail = el("td", {}, i.detail);
-    if (i.state === "skipped" || i.state === "pending") detail.append(...retryControls(i));
+    if (i.state === "skipped" || i.state === "pending") detail.append(...retryControls(i), byHandControls(i));
+    if (i.state === "matched" && i.matched_by === "locked") detail.append(byHandControls(i));
     if (i.state === "duplicate") detail.append(deleteControl(i));
     const toggle = el("button", { type: "button", className: "link", textContent: openHistory.has(i.id) ? "Скрий историята" : "История" });
     toggle.onclick = () => toggleHistory(i.id);
@@ -380,6 +386,44 @@ async function toggleHistory(id) {
 
 // Unsent keyword edits survive the periodic re-render
 const drafts = new Map();
+// Filling in by hand: which rows have the panel open and the frame picked for each
+const byHandOpen = new Set();
+const byHandAt = new Map();
+
+function byHandControls(item) {
+  const again = item.state === "matched";
+  const toggle = el("button", { type: "button", className: "link",
+    textContent: byHandOpen.has(item.id) ? "Затвори" : again ? "Друг кадър за постера" : "Попълни ръчно (без база)" });
+  toggle.onclick = () => { byHandOpen.has(item.id) ? byHandOpen.delete(item.id) : byHandOpen.add(item.id); renderTable(); };
+  const box = el("div", { className: "byhand" }, toggle);
+  if (!byHandOpen.has(item.id)) return box;
+  const at = byHandAt.get(item.id) ?? 25;
+  const preview = id => `api/items/${encodeURIComponent(id)}/hand-poster?at=${(byHandAt.get(id) ?? 25) / 100}`;
+  const img = el("img", { src: preview(item.id), alt: "Преглед на постера" });
+  const pos = el("span", { textContent: `кадър от ${at}% от филма` });
+  const slider = el("input", { type: "range", min: 2, max: 95, step: 1, value: at });
+  slider.oninput = () => { pos.textContent = `кадър от ${slider.value}% от филма`; };
+  slider.onchange = () => { byHandAt.set(item.id, +slider.value); img.src = preview(item.id); };
+  const msg = el("span", { className: "msg" });
+  const apply = el("button", { type: "button",
+    textContent: again ? "Смени постера" : "Приложи: заглавие от файла, без данни, заключен" });
+  apply.onclick = async () => {
+    apply.disabled = true;
+    try {
+      const res = await fetch(`api/items/${encodeURIComponent(item.id)}/by-hand`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ at: (byHandAt.get(item.id) ?? 25) / 100 }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || res.status);
+      byHandOpen.delete(item.id);
+      refresh();
+    } catch (e) {
+      msg.textContent = `Грешка: ${e.message}`;
+      apply.disabled = false;
+    }
+  };
+  box.append(img, el("div", { className: "row" }, slider, pos), el("div", { className: "row" }, apply, msg));
+  return box;
+}
 const KEYWORD_SEP = ";";
 
 function retryControls(item) {
@@ -471,7 +515,8 @@ async function refresh() {
   renderTiles(countStates(data.items));
   renderChart();
   // Re-rendering would steal focus from a keyword field being typed into
-  if (!document.getElementById("tbody").contains(document.activeElement)) renderTable();
+  // nor would it while a poster is being picked
+  if (!document.getElementById("tbody").contains(document.activeElement) && !byHandOpen.size) renderTable();
 }
 
 const tooltip = document.getElementById("tooltip");
@@ -504,7 +549,7 @@ const LOG_KIND = {
   matched: ["Match", "matched"], skipped: ["Без match", "skipped"], moved: ["Преместен", null], removed: ["Изтрит остатък", null],
   checked: ["Проверен", null], poster: ["Постер", "tmdb"], studios: ["Студиа", null],
   duplicate: ["Дубликат", "duplicate"], deleted: ["Изтрит", null], error: ["Грешка", "error"], rescan: ["Опресняване", null],
-  organize: ["Не е преместен", "skipped"], wait: ["Изчаква", "skipped"], retry: ["Нов опит", null],
+  organize: ["Не е преместен", "skipped"], manual: ["Ръчно", "matched"], wait: ["Изчаква", "skipped"], retry: ["Нов опит", null],
 };
 let logSeq = 0;
 let activityTimer = null;

@@ -7,12 +7,15 @@
 # What can't be rebuilt from Jellyfin (when and how a movie was matched, skips, keywords and the
 # history of every action) lives in a SQLite database in DATA_DIR.
 
+import base64
 import collections
 import difflib
+import io
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import urllib.error
@@ -21,7 +24,8 @@ import urllib.request
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel
 
 JELLYFIN_URL = os.environ["JELLYFIN_URL"].rstrip("/")
@@ -579,6 +583,90 @@ def check_plugin_pick(token, item, full, studio, name, label, provider, parts, s
 
 # A ThePornDB entry without a cover leaves Jellyfin with a frame grabbed from the video as the poster; TMDb often
 # has the same movie (same studio, date and runtime) with its cover
+FONT = "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"
+GOLD = (212, 175, 55)
+
+
+def video_frame(path, at):
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                           capture_output=True, text=True, check=True)
+    seconds = float(probe.stdout.strip() or 0) * at
+    grab = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{seconds:.1f}", "-i", path, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+                          capture_output=True, check=True)
+    return Image.open(io.BytesIO(grab.stdout)).convert("RGB")
+
+
+def wrapped(draw, text, width, max_lines, sizes):
+    for size in sizes:
+        font = ImageFont.truetype(FONT, size)
+        lines = []
+        for word in text.split():
+            if lines and draw.textlength(f"{lines[-1]} {word}", font=font) <= width:
+                lines[-1] += f" {word}"
+            else:
+                lines.append(word)
+        if len(lines) <= max_lines and all(draw.textlength(line, font=font) <= width for line in lines):
+            break
+    return lines, font
+
+
+# For movies no database knows: the title over a frame of the video, with a trailing number set apart as with
+# a series ("Sneak Peek 9"), and the studio at the bottom
+def hand_poster(path, title, studio, at):
+    poster = Image.new("RGB", (1000, 1500), (20, 20, 20))
+    draw = ImageDraw.Draw(poster)
+    draw.rectangle([0, 0, 999, 5], fill=GOLD)
+    draw.rectangle([0, 1494, 999, 1499], fill=GOLD)
+    series = re.fullmatch(r"(.+?)\s+(\d+)", title)
+    name, number = (series.group(1), series.group(2)) if series else (title, None)
+    lines, font = wrapped(draw, name.upper(), 900, 3, range(120, 45, -5))
+    y = 90
+    for line in lines:
+        draw.text(((1000 - draw.textlength(line, font=font)) / 2, y), line, font=font, fill="white")
+        y += round(font.size * 1.15)
+    if number:
+        big = ImageFont.truetype(FONT, 230)
+        draw.text(((1000 - draw.textlength(number, font=big)) / 2, y), number, font=big, fill=GOLD)
+        y += 270
+    small = ImageFont.truetype(FONT, 70)
+    draw.text(((1000 - draw.textlength(studio.upper(), font=small)) / 2, 1350), studio.upper(), font=small, fill=(217, 217, 217))
+    frame = video_frame(path, at)
+    frame = frame.resize((1000, round(frame.height * 1000 / frame.width)))
+    room = 1320 - (y + 30)
+    if frame.height > room:
+        frame = frame.resize((round(frame.width * room / frame.height), room))
+    top = max(y + 30, (1500 - frame.height) // 2 + 60)
+    poster.paste(frame, ((1000 - frame.width) // 2, min(top, 1320 - frame.height)))
+    out = io.BytesIO()
+    poster.save(out, "JPEG", quality=88)
+    return out.getvalue()
+
+
+def fill_by_hand(entry, at):
+    path, studio = entry["path"], entry["studio"]
+    title = ID_TAG.sub("", os.path.splitext(os.path.basename(path))[0]).strip()
+    label = f"{studio}/{entry['file']}"
+    poster = hand_poster(path, title, studio, at)
+    admin = next(u for u in jellyfin("/Users") if u["Policy"]["IsAdministrator"])
+    full = jellyfin(f"/Items/{entry['id']}", userId=admin["Id"])
+    # Whatever a wrong match left behind goes, artwork included
+    for _ in full.get("BackdropImageTags") or []:
+        jellyfin(f"/Items/{entry['id']}/Images/Backdrop/0", "DELETE")
+    for kind in list(full.get("ImageTags") or {}):
+        jellyfin(f"/Items/{entry['id']}/Images/{kind}", "DELETE")
+    full = jellyfin(f"/Items/{entry['id']}", userId=admin["Id"])
+    full.update(Name=title, OriginalTitle=title, ForcedSortName=title, Overview="", Taglines=[], Genres=[], Tags=[], People=[],
+                Studios=[{"Name": n} for n in merged_studios([studio])], ProviderIds={}, ProductionYear=None, PremiereDate=None,
+                CommunityRating=None, OfficialRating=None, LockData=True)
+    jellyfin(f"/Items/{entry['id']}", "POST", full)
+    urllib.request.urlopen(urllib.request.Request(
+        f"{JELLYFIN_URL}/Items/{entry['id']}/Images/Primary", base64.b64encode(poster),
+        {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"', "Content-Type": "image/jpeg"}, method="POST"), timeout=60).read()
+    update_movie(path, tpdb_id=None, matched_by="locked", matched_at=time.time(), skipped_at=None, skip_reason=None, candidates="[]", poster_checked=None)
+    event(path, "manual", f"filled in by hand as {title}, poster from the frame at {round(at * 100)}%", label)
+    record({"Id": entry["id"], "Path": path}, studio, entry["file"], "matched", title)
+
+
 def check_poster(token, item, full, studio, label, provider):
     picked = tpdb_movie(token, provider.split("/", 1)[1])
     if picked and not has_cover(picked) and TMDB_API_KEY:
@@ -926,6 +1014,35 @@ def retry(item_id: str, body: Retry):
         priority.add(entry["path"])
     wake.set()
     return {**entry, "keywords": keywords}
+
+
+class ByHand(BaseModel):
+    at: float = 0.25
+
+
+def by_hand_entry(item_id):
+    with lock:
+        entry = dict(status.get(item_id) or {})
+        row = entry and movie(entry["path"])
+    if not entry:
+        raise HTTPException(404, "unknown item")
+    # Movies without a match, or ones already filled in by hand whose poster gets another frame
+    if entry["state"] not in ("skipped", "pending") and not (entry["state"] == "matched" and row["matched_by"] == "locked"):
+        raise HTTPException(409, f"item is {entry['state']}")
+    return entry
+
+
+@app.get("/api/items/{item_id}/hand-poster")
+def hand_poster_preview(item_id: str, at: float = 0.25):
+    entry = by_hand_entry(item_id)
+    title = ID_TAG.sub("", os.path.splitext(os.path.basename(entry["path"]))[0]).strip()
+    return Response(hand_poster(entry["path"], title, entry["studio"], min(max(at, 0.0), 0.99)), media_type="image/jpeg")
+
+
+@app.post("/api/items/{item_id}/by-hand")
+def by_hand(item_id: str, body: ByHand):
+    fill_by_hand(by_hand_entry(item_id), min(max(body.at, 0.0), 0.99))
+    return {"ok": True}
 
 
 @app.delete("/api/items/{item_id}")

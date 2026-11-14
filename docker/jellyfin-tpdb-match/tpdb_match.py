@@ -237,7 +237,7 @@ def find_tmdb_match(title, studio, year, minutes, keywords):
                 found[movie["id"]] = movie
     similar = []
     for movie in found.values():
-        names = {movie["title"], movie.get("original_title") or movie["title"]}
+        names = studio_free(movie["title"], studio) | studio_free(movie.get("original_title") or movie["title"], studio)
         similarity = round(max(difflib.SequenceMatcher(None, norm(t), norm(n)).ratio() for t in texts for n in names), 2)
         if similarity >= MIN_SIMILARITY:
             same_year = bool(year) and (movie.get("release_date") or "")[:4] == str(year)
@@ -319,6 +319,23 @@ def same_studio(folder, name):
     return bool(a and b) and (b.startswith(a) or a.startswith(b))
 
 
+COMPOUND = re.compile(r"\b(blow|hand|foot|rim|boob|tit)\s+(jobs?)\b", re.I)
+
+
+# Releases often carry the studio in the title, in front ("The Penthouse Pet's Guide to Blow Jobs") or in
+# parentheses after it ("Friends With Benefits (Penthouse)"), which a file name usually leaves out
+def studio_free(title, studio):
+    names = {title}
+    suffix = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", title)
+    if suffix and same_studio(studio, suffix.group(2)):
+        names.add(suffix.group(1))
+    words = re.sub(r"^the\s+", "", title, flags=re.I).split()
+    for k in range(1, min(3, len(words) - 1) + 1):
+        if norm(re.sub(r"'s$", "", " ".join(words[:k]), flags=re.I)) == norm(studio):
+            names.add(" ".join(words[k:]))
+    return names
+
+
 def studio_sites(token, studio, cache):
     if studio not in cache:
         cache[studio] = {studio} | {s["name"] for s in tpdb(token, "sites", q=studio, per_page=50) if same_studio(studio, s["name"])}
@@ -331,8 +348,10 @@ def find_match(token, title, studio, year, minutes, keywords, sites):
     texts = [title, *keywords] + ([f"{title} {' '.join(keywords)}"] if keywords else [])
     found = {}
     queries = {title.replace(" - ", ": "), title.split(" - ")[0], *texts}
-    # ThePornDB's search doesn't treat "&" and "and" alike: "Naughty And Nice" misses "Naughty & Nice"
+    # ThePornDB's search doesn't treat "&" and "and" alike ("Naughty And Nice" misses "Naughty & Nice"), nor
+    # a compound written apart ("Blow Jobs" misses "Blowjobs")
     queries |= {re.sub(r"\s+and\s+", " & ", q, flags=re.I) for q in queries} | {q.replace(" & ", " and ") for q in queries}
+    queries |= {COMPOUND.sub(r"\1\2", q) for q in queries}
     # The search across all of ThePornDB is only a fallback for sites named unlike the studio: it takes up to
     # minutes where a search within one site takes a second
     for params in [[{"q": q, "site": site} for q in queries for site in sites], [{"q": q} for q in queries]]:
@@ -345,10 +364,7 @@ def find_match(token, title, studio, year, minutes, keywords, sites):
 
     scored = []
     for movie in found.values():
-        # Some releases carry the studio in the title, as "Friends With Benefits (Penthouse)"
-        suffix = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", movie["title"])
-        names = [movie["title"]] + ([suffix.group(1)] if suffix and same_studio(studio, suffix.group(2)) else [])
-        similarity = round(max(difflib.SequenceMatcher(None, norm(t), norm(n)).ratio() for t in texts for n in names), 2)
+        similarity = round(max(difflib.SequenceMatcher(None, norm(t), norm(n)).ratio() for t in texts for n in studio_free(movie["title"], studio)), 2)
         movie_year = int(movie["date"][:4]) if movie.get("date") else None
         movie_minutes = (movie.get("duration") or 0) / 60
         off = abs(movie_minutes - minutes) if movie_minutes and minutes else None

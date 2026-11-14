@@ -68,7 +68,8 @@ last_rescan = [0.0]
 priority = set()
 lock = threading.RLock()
 wake = threading.Event()
-# Folder name -> the name Jellyfin shows for that studio ("Adam&Eve" -> "Adam & Eve"), from the library's movies
+# Folder name -> how the databases spell that same name ("Adam&Eve" -> "Adam & Eve"), from the library's movies;
+# a folder whose name they never use exactly ("Marc Dorcel") keeps its own
 studio_names = {}
 last_run = {"started": None, "finished": None, "error": None, "interval": INTERVAL, "queued": 0, "current": None}
 # What the matcher did lately, shown live on the status page
@@ -310,7 +311,7 @@ def apply_tmdb(item_id, full, movie, studio):
     full["ProductionYear"] = int(movie["release_date"][:4]) if movie.get("release_date") else None
     full["Genres"] = [g["name"] for g in movie.get("genres", [])]
     full["Tags"] = []
-    full["Studios"] = [{"Name": n} for n in with_folder_studio(merged_studios([c["name"] for c in movie.get("production_companies", [])]), studio)]
+    full["Studios"] = [{"Name": n} for n in folder_studio(studio)]
     full["CommunityRating"] = movie.get("vote_average") if movie.get("vote_count") else None
     credits = movie.get("credits") or {}
     full["People"] = [{"Name": p["name"], "Role": p.get("character") or "", "Type": "Actor"} for p in credits.get("cast", [])[:30]]
@@ -429,7 +430,7 @@ def merged_studios(names):
 # Locks the field, or the next metadata refresh would bring the plugin's site names back
 def merge_studios(item, admin, label, studio):
     names = [s["Name"] for s in item.get("Studios", [])]
-    merged = with_folder_studio(merged_studios(names), studio)
+    merged = folder_studio(studio)
     if merged == names:
         return
     full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
@@ -441,12 +442,10 @@ def merge_studios(item, admin, label, studio):
     event(item["Path"], "studios", f"{', '.join(names) or 'none'} -> {', '.join(merged)}", label)
 
 
-# A movie is listed under the studio of its folder too, even when its database names only the label it came out
-# under ("Axel Braun Productions" for a Wicked parody), so browsing a studio in Jellyfin shows the whole folder
-def with_folder_studio(names, studio):
-    if any(same_studio(studio, n) for n in names):
-        return names
-    return names + [studio_names.get(studio, studio)]
+# The folder decides a movie's studio: databases name sites, labels and distributors ("Axel Braun Productions"
+# for a Wicked parody, "Dorcel Club" for Marc Dorcel), so browsing a studio in Jellyfin shows exactly its folder
+def folder_studio(studio):
+    return [studio_names.get(studio, studio)]
 
 
 def sidecars(folder, stem):
@@ -593,6 +592,24 @@ def current_state(item_id):
         return status.get(item_id, {}).get("state")
 
 
+# Provider id -> whether ThePornDB lists it under a site of the folder's studio. A pick of the plugin is judged by
+# that rather than by the studios in Jellyfin, which always show the folder's studio
+plugin_pick_sites = {}
+
+
+def plugin_pick_in_studio(token, provider, studio):
+    if not provider:
+        return False
+    if (provider, studio) not in plugin_pick_sites:
+        try:
+            picked = tpdb_movie(token, provider.split("/", 1)[1])
+        except (urllib.error.URLError, TimeoutError) as e:
+            log(f"error {studio}: {e!r} while checking the plugin's pick {provider}")
+            return False
+        plugin_pick_sites[(provider, studio)] = bool(picked) and same_studio(studio, (picked.get("site") or {}).get("name", ""))
+    return plugin_pick_sites[(provider, studio)]
+
+
 def check_plugin_pick(token, item, full, studio, name, label, provider, parts, sites_cache):
     year_match = re.search(r"\((\d{4})\)\s*$", name)
     year = int(year_match.group(1)) if year_match else None
@@ -697,7 +714,7 @@ def fill_by_hand(entry, at):
         jellyfin(f"/Items/{entry['id']}/Images/{kind}", "DELETE")
     full = jellyfin(f"/Items/{entry['id']}", userId=admin["Id"])
     full.update(Name=title, OriginalTitle=title, ForcedSortName=title, Overview="", Taglines=[], Genres=[], Tags=[], People=[],
-                Studios=[{"Name": n} for n in merged_studios([studio])], ProviderIds={}, ProductionYear=None, PremiereDate=None,
+                Studios=[{"Name": n} for n in folder_studio(studio)], ProviderIds={}, ProductionYear=None, PremiereDate=None,
                 CommunityRating=None, OfficialRating=None, LockData=True)
     jellyfin(f"/Items/{entry['id']}", "POST", full)
     urllib.request.urlopen(urllib.request.Request(
@@ -742,7 +759,7 @@ def run_once():
         location = next((l for l in library["Locations"] if item["Path"].startswith(l.rstrip("/") + "/")), None)
         if location:
             folder = item["Path"][len(location.rstrip("/")) + 1:].split("/")[0]
-            seen_names[folder].update(n for n in merged_studios([s["Name"] for s in item.get("Studios", [])]) if same_studio(folder, n))
+            seen_names[folder].update(s["Name"] for s in item.get("Studios", []) if norm(s["Name"]) == norm(folder))
     studio_names.update({folder: names.most_common(1)[0][0] for folder, names in seen_names.items() if names})
     # Classify everything first so the status page shows the whole library before the slow ThePornDB lookups
     todo = []
@@ -788,6 +805,8 @@ def run_once():
             record(item, studio, name, "pending", "file is still being copied")
             next_wake = min(next_wake, settles)
             continue
+        # Matched or not, the folder is the studio: a wrong guess of the plugin shows under the right studio too
+        merge_studios(item, admin, label, studio)
         tag = ID_TAG.search(item["Path"])
         provider = item.get("ProviderIds", {}).get("ThePornDB")
         row = movie(item["Path"])
@@ -796,7 +815,8 @@ def run_once():
         # again by hand there, so the folder follows Jellyfin instead
         tagged_id = tag_ref(tag) if tag else None
         identified = bool(tag and provider and row["tpdb_id"] and row["tpdb_id"].lower() == tagged_id and provider.lower() != tagged_id)
-        if provider and (identified or (provider.lower() == tagged_id if tag else any(same_studio(studio, s["Name"]) for s in item.get("Studios", [])))):
+        if provider and (identified or (provider.lower() == tagged_id if tag else
+                                        (row["tpdb_id"] or "").lower() == provider.lower() or plugin_pick_in_studio(token, provider, studio))):
             if identified:
                 # Retagged right away and the new id stored only once that worked: a stored id that no longer
                 # matches the tag would read as a folder retagged by hand on the next run, undoing the fix. The
@@ -827,7 +847,6 @@ def run_once():
             if movie(item["Path"])["matched_by"] == "plugin" and item.get("RunTimeTicks"):
                 todo.append((item, studio, name, label, tag, ("plugin", provider, parts)))
                 continue
-            merge_studios(item, admin, label, studio)
             # Counted from when this process first saw the item matched, as the plugin also identifies new
             # items on its own and is still writing their artwork right after
             due = seen_matched_at.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER

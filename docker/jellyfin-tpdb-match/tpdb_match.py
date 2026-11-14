@@ -71,6 +71,7 @@ wake = threading.Event()
 # Folder name -> how the databases spell that same name ("Adam&Eve" -> "Adam & Eve"), from the library's movies;
 # a folder whose name they never use exactly ("Marc Dorcel") keeps its own
 studio_names = {}
+refreshed_studios = set()
 last_run = {"started": None, "finished": None, "error": None, "interval": INTERVAL, "queued": 0, "current": None}
 # What the matcher did lately, shown live on the status page
 activity = collections.deque(maxlen=500)
@@ -343,6 +344,10 @@ COMPOUND = re.compile(r"\b(blow|hand|foot|rim|boob|tit)\s+(jobs?)\b", re.I)
 # Releases often carry the studio in the title, in front ("The Penthouse Pet's Guide to Blow Jobs") or in
 # parentheses after it ("Friends With Benefits (Penthouse)"), which a file name usually leaves out
 def studio_free(title, studio):
+    # ThePornDB lists some titles sorted, as "Housekeeper, the"
+    article = re.fullmatch(r"(.+), (the|a|an)", title, re.I)
+    if article:
+        title = f"{article.group(2)} {article.group(1)}"
     names = {title}
     suffix = re.fullmatch(r"(.+?)\s*\(([^()]+)\)", title)
     if suffix and same_studio(studio, suffix.group(2)):
@@ -761,6 +766,13 @@ def run_once():
             folder = item["Path"][len(location.rstrip("/")) + 1:].split("/")[0]
             seen_names[folder].update(s["Name"] for s in item.get("Studios", []) if norm(s["Name"]) == norm(folder))
     studio_names.update({folder: names.most_common(1)[0][0] for folder, names in seen_names.items() if names})
+    # A studio Jellyfin created on the fly (first named by the matcher, not by a scan) stays out of the library's
+    # list of studios until it is refreshed once
+    for folder in seen_names:
+        name = studio_names.get(folder, folder)
+        if name not in refreshed_studios:
+            jellyfin(f"/Items/{jellyfin('/Studios/' + urllib.parse.quote(name))['Id']}/Refresh", "POST", MetadataRefreshMode="FullRefresh")
+            refreshed_studios.add(name)
     # Classify everything first so the status page shows the whole library before the slow ThePornDB lookups
     todo = []
     next_wake = float("inf")

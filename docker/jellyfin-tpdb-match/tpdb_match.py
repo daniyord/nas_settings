@@ -726,8 +726,11 @@ def run_once():
         last_run["queued"] = len(todo) - n
         full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
         if full.get("LockData"):
+            # Locked without a match means its metadata was filled in by hand, as for movies no database knows
             if not check:
-                record(item, studio, name, "locked", "metadata is locked in Jellyfin")
+                if movie(item["Path"])["matched_by"] != "locked":
+                    update_movie(item["Path"], matched_by="locked", matched_at=time.time(), skipped_at=None, skip_reason=None, candidates="[]")
+                record(item, studio, name, "matched", full.get("Name") or name)
             continue
         if check:
             if lookups == MAX_LOOKUPS_PER_RUN:

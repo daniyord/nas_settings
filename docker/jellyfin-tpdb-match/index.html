@@ -184,7 +184,7 @@ const openHistory = new Set();
 const histories = new Map();
 const MATCHED_BY = {
   title: "по заглавие", keywords: "по ключови думи", link: "по линк", tag: "по таг в папката",
-  plugin: "от plugin-а", "plugin-checked": "от plugin-а, проверен", jellyfin: "ръчно в Jellyfin", unknown: "преди историята",
+  plugin: "от plugin-а", "plugin-checked": "от plugin-а, проверен", locked: "ръчно, заключен", jellyfin: "ръчно в Jellyfin", unknown: "преди историята",
   tmdb: "в TMDb по заглавие", "tmdb-link": "по линк към TMDb", "tmdb-tag": "по TMDb таг в папката",
 };
 const EVENT_KIND = { matched: "Match", skipped: "Без match", moved: "Преместен", studios: "Студиа", retry: "Нов опит", duplicate: "Дубликат", deleted: "Изтрит", poster: "Постер" };

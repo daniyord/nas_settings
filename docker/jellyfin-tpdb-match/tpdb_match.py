@@ -761,8 +761,16 @@ def run_once():
         if provider and (identified or (provider.lower() == tagged_id if tag else any(same_studio(studio, s["Name"]) for s in item.get("Studios", [])))):
             if identified:
                 # Retagged right away and the new id stored only once that worked: a stored id that no longer
-                # matches the tag would read as a folder retagged by hand on the next run, undoing the fix
-                new_path = organize(item, parts, label)
+                # matches the tag would read as a folder retagged by hand on the next run, undoing the fix. The
+                # folder is named from ThePornDB, as Jellyfin may still be refreshing and show the old title and year
+                named = item
+                try:
+                    picked = tpdb_movie(token, provider.split("/", 1)[1])
+                    if picked:
+                        named = {**item, "Name": picked["title"], "ProductionYear": int(picked["date"][:4]) if picked.get("date") else None}
+                except (urllib.error.URLError, TimeoutError) as e:
+                    log(f"error {label}: {e!r}; the folder is named from Jellyfin")
+                new_path = organize(named, parts, label)
                 if new_path:
                     update_movie(new_path, tpdb_id=provider, matched_at=time.time(), matched_by="jellyfin", skipped_at=None)
                     event(new_path, "matched", f"{item['Name']} ({provider}, identified in Jellyfin)", label)

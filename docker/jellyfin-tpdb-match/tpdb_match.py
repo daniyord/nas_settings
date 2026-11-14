@@ -58,7 +58,7 @@ TMDB_REF = re.compile(r"(?:https?://)?(?:www\.)?themoviedb\.org/movie/(\d+)[\w-]
 # TMDb is the last resort, searched only when ThePornDB has nothing; unset turns it off. Either the v3
 # API key or the v4 read access token (a JWT)
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "")
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".mpg", ".mpeg", ".ts", ".webm"}
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".m4v", ".mov", ".mpg", ".mpeg", ".ts", ".webm", ".flv", ".f4v", ".divx", ".asf", ".vob", ".rm", ".rmvb", ".3gp"}
 
 # In memory only: rebuilt from Jellyfin and the database on every run
 status = {}
@@ -96,7 +96,9 @@ CREATE TABLE IF NOT EXISTS movies (
     skip_reason TEXT,
     candidates TEXT NOT NULL DEFAULT '[]',
     -- The match whose missing ThePornDB cover was last looked up on TMDb
-    poster_checked TEXT
+    poster_checked TEXT,
+    -- The ThePornDB id Jellyfin had when the matcher gave up on the movie; another one later was set by hand
+    provider_at_skip TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
@@ -108,8 +110,9 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_movie ON events(movie_id, at);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """)
-if "poster_checked" not in {r["name"] for r in db.execute("PRAGMA table_info(movies)")}:
-    db.execute("ALTER TABLE movies ADD COLUMN poster_checked TEXT")
+for column in ("poster_checked", "provider_at_skip"):
+    if column not in {r["name"] for r in db.execute("PRAGMA table_info(movies)")}:
+        db.execute(f"ALTER TABLE movies ADD COLUMN {column} TEXT")
 
 
 def meta(key, value=None):
@@ -501,31 +504,32 @@ def identified_name(item, folder):
     return f"{title} ({year})" if year else title
 
 
-def organize(item, parts, label):
+# A movie filled in by hand has no id to tag its folder with, so it only gets a folder of its own, under its title
+def organize(item, parts, label, by_hand=False):
     ids = item.get("ProviderIds", {})
     provider = re.fullmatch(r"movies/(" + UUID + ")", ids.get("ThePornDB", ""), re.I)
     key = f"tpdbid-{provider.group(1).lower()}" if provider else f"tmdbid-{ids['Tmdb']}" if ids.get("Tmdb") else None
-    if not key or not os.path.isfile(item["Path"]):
+    if not (key or by_hand) or not os.path.isfile(item["Path"]) or (by_hand and len(parts) != 2):
         return
-    tag = f"[{key}]"
+    tag = f" [{key}]" if key else ""
     folder, filename = os.path.split(item["Path"])
     stem = os.path.splitext(filename)[0]
 
     if len(parts) == 2:
         year = item.get("ProductionYear")
         base = stem if not year or re.search(r"\(\d{4}\)\s*$", stem) else f"{stem} ({year})"
-        source, target = item["Path"], os.path.join(folder, f"{base} {tag}")
+        source, target = item["Path"], os.path.join(folder, f"{base}{tag}")
         moves = [(item["Path"], os.path.join(target, filename))]
         moves += [(os.path.join(folder, n), os.path.join(target, folder_name(n, stem))) for n in sidecars(folder, stem)]
     elif len(parts) == 3 and ID_TAG.search(parts[1]):
         if ID_TAG.search(parts[1]).group(1).lower() == key:
             return
-        source, target = folder, os.path.join(os.path.dirname(folder), f"{identified_name(item, parts[1])} {tag}")
+        source, target = folder, os.path.join(os.path.dirname(folder), f"{identified_name(item, parts[1])}{tag}")
         moves = [(folder, target)]
     elif len(parts) == 3:
         if sum(os.path.splitext(n)[1].lower() in VIDEO_EXTS for n in os.listdir(folder)) != 1:
             return
-        source, target = folder, f"{folder} {tag}"
+        source, target = folder, f"{folder}{tag}"
         moves = [(folder, target)]
     else:
         return
@@ -775,6 +779,7 @@ def run_once():
             refreshed_studios.add(name)
     # Classify everything first so the status page shows the whole library before the slow ThePornDB lookups
     todo = []
+    item_parts = {}
     next_wake = float("inf")
     stale = float("inf")
     filenames = {}
@@ -827,8 +832,15 @@ def run_once():
         # again by hand there, so the folder follows Jellyfin instead
         tagged_id = tag_ref(tag) if tag else None
         identified = bool(tag and provider and row["tpdb_id"] and row["tpdb_id"].lower() == tagged_id and provider.lower() != tagged_id)
+        # A movie the matcher gave up on that has another id in Jellyfin since was identified there by hand, so its
+        # pick stands even under another studio's site ("Teravision" for Vivid). Rows skipped before this was
+        # recorded take the id they have now as the one from the skip
+        if row["skipped_at"] and row["provider_at_skip"] is None:
+            update_movie(item["Path"], provider_at_skip=provider or "")
+            row = movie(item["Path"])
+        by_hand = bool(provider and row["skipped_at"] and provider.lower() != (row["provider_at_skip"] or "").lower())
         if provider and (identified or (provider.lower() == tagged_id if tag else
-                                        (row["tpdb_id"] or "").lower() == provider.lower() or plugin_pick_in_studio(token, provider, studio))):
+                                        by_hand or (row["tpdb_id"] or "").lower() == provider.lower() or plugin_pick_in_studio(token, provider, studio))):
             if identified:
                 # Retagged right away and the new id stored only once that worked: a stored id that no longer
                 # matches the tag would read as a folder retagged by hand on the next run, undoing the fix. The
@@ -849,6 +861,9 @@ def run_once():
             if row["tpdb_id"] != provider:
                 if backfill:
                     update_movie(item["Path"], tpdb_id=provider, matched_by="unknown", skipped_at=None)
+                elif by_hand:
+                    update_movie(item["Path"], tpdb_id=provider, matched_at=time.time(), matched_by="jellyfin", skipped_at=None)
+                    event(item["Path"], "matched", f"{item['Name']} ({provider}, identified in Jellyfin)", label)
                 else:
                     update_movie(item["Path"], tpdb_id=provider, matched_at=time.time(), matched_by="plugin", skipped_at=None)
                     event(item["Path"], "matched", f"{item['Name']} ({provider}, by the Jellyfin plugin)", label)
@@ -875,7 +890,8 @@ def run_once():
             # The move gives the movie a new Jellyfin item that comes back unlocked and without its cast, so the
             # metadata is written once more; only right after the move, so unlocking it later to edit by hand sticks
             with lock:
-                last = db.execute("SELECT kind FROM events WHERE movie_id = ? ORDER BY at DESC, id DESC LIMIT 1", (row["id"],)).fetchone()
+                # Other events (studios) may follow the move; what counts is whether the move came after the match
+                last = db.execute("SELECT kind FROM events WHERE movie_id = ? AND kind IN ('matched', 'moved') ORDER BY at DESC, id DESC LIMIT 1", (row["id"],)).fetchone()
             if TMDB_API_KEY and last and last["kind"] == "moved":
                 full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
                 found = None if full.get("LockData") else tmdb_movie(tmdb_id)
@@ -900,6 +916,7 @@ def run_once():
         if current_state(item["Id"]) != "locked":
             record(item, studio, name, "pending", "waiting for the matcher")
         todo.append((item, studio, name, label, tag, None))
+        item_parts[item["Id"]] = parts
 
     for location in filter(os.path.isdir, library["Locations"]):
         for studio in os.listdir(location):
@@ -936,6 +953,7 @@ def run_once():
                 if movie(item["Path"])["matched_by"] != "locked":
                     update_movie(item["Path"], matched_by="locked", matched_at=time.time(), skipped_at=None, skip_reason=None, candidates="[]")
                 record(item, studio, name, "matched", full.get("Name") or name)
+                organize({**item, "ProductionYear": full.get("ProductionYear")}, item_parts[item["Id"]], label, by_hand=True)
             continue
         if check:
             if lookups == MAX_LOOKUPS_PER_RUN:
@@ -996,7 +1014,8 @@ def run_once():
             log(f"error {label}: {e!r}; tried again on the next run")
             continue
         if not found:
-            update_movie(item["Path"], skipped_at=time.time(), skip_reason=reason, candidates=json.dumps(candidates, ensure_ascii=False))
+            update_movie(item["Path"], skipped_at=time.time(), skip_reason=reason, candidates=json.dumps(candidates, ensure_ascii=False),
+                         provider_at_skip=item.get("ProviderIds", {}).get("ThePornDB") or "")
             event(item["Path"], "skipped", reason, label)
             record(item, studio, name, "skipped", reason, candidates)
             continue

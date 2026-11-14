@@ -20,6 +20,8 @@ services:
       - /volume2/Movies2:/movies2
       - /volume3/Movies3:/movies3
       - /volume5/MoviesAdult:/moviesadult
+      # Same layout as MoviesAdult (Porn, PornScenes), on the disk of volume 6 once volume 5 filled up
+      - /volume6/MoviesAdult1:/moviesadult1
 
   jellyfin-tpdb-match:
     build: ./jellyfin-tpdb-match
@@ -43,6 +45,7 @@ services:
       - /volume1/ServerConfigurations/JellyfinTpdbMatch:/data
       # Same path as inside jellyfin, so item paths can be used as is; matched movies get their own folder
       - /volume5/MoviesAdult/Porn:/moviesadult/Porn
+      - /volume6/MoviesAdult1/Porn:/moviesadult1/Porn
 
   calibre-web:
     build: ./calibre-web

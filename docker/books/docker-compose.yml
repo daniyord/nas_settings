@@ -1,0 +1,20 @@
+# Calibre-Web with the calibre-ingest service (docs/SETUP_docker.md). Included from ../docker-compose.yml.
+services:
+  calibre-web:
+    build: ./calibre-web
+    container_name: calibre-web
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      # UGOS share ACLs grant access via dani_yord83's primary group "admin", not the owner uid
+      PGID: 10
+      TZ: Etc/UTC
+      # calibredb/ebook-convert for bulk imports and format conversion
+      DOCKER_MODS: linuxserver/mods:universal-calibre
+    ports:
+      - 8083:8083
+    volumes:
+      - /volume1/ServerConfigurations/CalibreWeb:/config
+      - /volume1/Common/Other/Books/Calibre:/books
+      - /volume1/Common/Other/Books/Ingest:/ingest
+      - /volume1/Common/Other/Books/Ingest-Boardgames:/ingest-boardgames

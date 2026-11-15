@@ -1,0 +1,23 @@
+# Services of /shared/projects/boardgames (docs/SETUP_boardgames.md). Included from ../docker-compose.yml;
+# variables come from the .env next to this file.
+services:
+  # Dev database of /shared/projects/boardgames: the app itself runs on the PC (make dev) and connects here
+  boardgames-dev-db:
+    image: postgres:17-alpine
+    container_name: boardgames-dev-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: boardgames
+      POSTGRES_PASSWORD: ${BOARDGAMES_DEV_DB_PASSWORD:?set BOARDGAMES_DEV_DB_PASSWORD in docker/boardgames/.env}
+      POSTGRES_DB: boardgames_dev
+      TZ: Europe/Sofia
+    # Reachable from the LAN and, through the host-networked tailscale container, from the tailnet
+    ports:
+      - 5433:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boardgames -d boardgames_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - /volume1/ServerConfigurations/Boardgames/dev/postgres:/var/lib/postgresql/data

@@ -2,5 +2,5 @@
 
 __pycache__
 
-# Compose secrets (TS_AUTHKEY, JELLYFIN_API_KEY)
-docker/.env
+# Compose secrets: docker/.env (TS_AUTHKEY) and one .env per service group (docker/<group>/.env)
+docker/**/.env

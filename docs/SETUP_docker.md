@@ -12,15 +12,26 @@ make hard   # also pull, prune images, restart
 make down
 
 # Single service:
-cd docker && DOCKER_HOST=ssh://nas docker compose up -d calibre-web
+DOCKER_HOST=ssh://nas docker compose --project-directory docker up -d calibre-web
 ```
 
-Secrets (`TS_AUTHKEY`, `JELLYFIN_API_KEY`) go in the gitignored `docker/.env`. App data lives in `/volume1/ServerConfigurations/<App>`.
+Services are grouped one folder per purpose. `docker/docker-compose.yml` holds only `tailscale` and pulls the groups in with `include:`, so everything is still one `nas` project on one network (`jellyfin-tpdb-match` reaches `http://jellyfin:8096`) and `make up` covers it all:
+
+| Folder | Services | Secrets (gitignored) |
+|--------|----------|----------------------|
+| `docker/` | `tailscale` | `docker/.env`: `TS_AUTHKEY` |
+| `docker/media/` | `jellyfin`, `jellyfin-tpdb-match` (built from `media/jellyfin-tpdb-match`) | `docker/media/.env`: `JELLYFIN_API_KEY`, `TMDB_API_KEY` |
+| `docker/books/` | `calibre-web` (built from `books/calibre-web`) | — |
+| `docker/boardgames/` | `boardgames-dev-db` | `docker/boardgames/.env`, see [SETUP_boardgames.md](SETUP_boardgames.md) |
+
+A new group gets its own folder with a `docker-compose.yml` (and `.env` if it needs secrets) and a line in the `include:` list. App data lives in `/volume1/ServerConfigurations/<App>`.
 
 | Service | Port | Notes |
 |---------|------|-------|
 | `jellyfin` | 8096 | Media from `/volume1/Movies1`, `/volume2/Movies2`, `/volume3/Movies3` |
-| `calibre-web` | 8083 | Library at `/volume1/Common/Other/Books/Calibre`; includes `calibredb` via `DOCKER_MODS`; built from `docker/calibre-web` to add the `calibre-ingest` service |
+| `jellyfin-tpdb-match` | 8097 | ThePornDB matcher with a status page for the adult library |
+| `calibre-web` | 8083 | Library at `/volume1/Common/Other/Books/Calibre`; includes `calibredb` via `DOCKER_MODS`; built from `docker/books/calibre-web` to add the `calibre-ingest` service |
+| `boardgames-dev-db` | 5433 | Board game platform dev database; see [SETUP_boardgames.md](SETUP_boardgames.md) |
 | `tailscale` | — | Remote access, see [Tailscale](#tailscale-one-time) below and `/shared/linux_settings/docs/SETUP_tailscale.md` for the PCs |
 
 qBittorrent is a UGOS App Center app and stays managed by UGOS.
@@ -34,7 +45,7 @@ qBittorrent is a UGOS App Center app and stays managed by UGOS.
     calibredb add --with-library /books --authors "..." --tags книга-игра --languages bul /path/in/container.pdf
   ```
   Restart the container afterwards (`docker restart calibre-web`) so Calibre-Web picks up the changes.
-- Ingest folders, checked every minute by the `calibre-ingest` service (`docker/calibre-web/calibre-ingest`); each file is added, deleted, and Calibre-Web restarted. Files that fail to import go to a `failed` subfolder. Logs: `docker logs calibre-web`.
+- Ingest folders, checked every minute by the `calibre-ingest` service (`docker/books/calibre-web/calibre-ingest`); each file is added, deleted, and Calibre-Web restarted. Files that fail to import go to a `failed` subfolder. Logs: `docker logs calibre-web`.
   - `Common/Other/Books/Ingest` — normal books; title and author come from the book's own metadata.
   - `Common/Other/Books/Ingest-Boardgames` — board game rulebooks; author "Настолни игри", tag "настолна игра", filename as title.
 - Back up `metadata.db` before bulk edits, and don't edit the library from Calibre desktop and Calibre-Web at the same time.

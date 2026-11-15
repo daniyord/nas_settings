@@ -21,3 +21,38 @@ services:
       retries: 5
     volumes:
       - /volume1/ServerConfigurations/Boardgames/dev/postgres:/var/lib/postgresql/data
+      - /volume1/ServerConfigurations/Boardgames/dev/backups:/backups
+
+  # Prod: the whole app on the NAS, deployed with make deploy-prod from the boardgames repo
+  boardgames:
+    build:
+      context: ../../../projects/boardgames
+    container_name: boardgames
+    restart: unless-stopped
+    depends_on:
+      boardgames-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://boardgames:${BOARDGAMES_PROD_DB_PASSWORD:?set BOARDGAMES_PROD_DB_PASSWORD in docker/boardgames/.env}@boardgames-db:5432/boardgames_prod
+      TZ: Europe/Sofia
+    ports:
+      - 8110:8000
+
+  # No published port: only the prod app reaches it (psql via docker exec)
+  boardgames-db:
+    image: postgres:17-alpine
+    container_name: boardgames-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: boardgames
+      POSTGRES_PASSWORD: ${BOARDGAMES_PROD_DB_PASSWORD:?set BOARDGAMES_PROD_DB_PASSWORD in docker/boardgames/.env}
+      POSTGRES_DB: boardgames_prod
+      TZ: Europe/Sofia
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boardgames -d boardgames_prod"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - /volume1/ServerConfigurations/Boardgames/prod/postgres:/var/lib/postgresql/data
+      - /volume1/ServerConfigurations/Boardgames/prod/backups:/backups

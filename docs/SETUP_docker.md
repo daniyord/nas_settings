@@ -22,7 +22,7 @@ Services are grouped one folder per purpose. `docker/docker-compose.yml` holds o
 | `docker/` | `tailscale` | `docker/.env`: `TS_AUTHKEY` |
 | `docker/media/` | `jellyfin`, `jellyfin-tpdb-match` (built from `media/jellyfin-tpdb-match`) | `docker/media/.env`: `JELLYFIN_API_KEY`, `TMDB_API_KEY` |
 | `docker/books/` | `calibre-web` (built from `books/calibre-web`) | — |
-| `docker/boardgames/` | `boardgames-dev-db` | `docker/boardgames/.env`, see [SETUP_boardgames.md](SETUP_boardgames.md) |
+| `docker/boardgames/` | `boardgames`, `boardgames-db`, `boardgames-dev-db` | `docker/boardgames/.env`, see [SETUP_boardgames.md](SETUP_boardgames.md) |
 
 A new group gets its own folder with a `docker-compose.yml` (and `.env` if it needs secrets) and a line in the `include:` list. App data lives in `/volume1/ServerConfigurations/<App>`.
 
@@ -31,7 +31,8 @@ A new group gets its own folder with a `docker-compose.yml` (and `.env` if it ne
 | `jellyfin` | 8096 | Media from `/volume1/Movies1`, `/volume2/Movies2`, `/volume3/Movies3` |
 | `jellyfin-tpdb-match` | 8097 | ThePornDB matcher with a status page for the adult library |
 | `calibre-web` | 8083 | Library at `/volume1/Common/Other/Books/Calibre`; includes `calibredb` via `DOCKER_MODS`; built from `docker/books/calibre-web` to add the `calibre-ingest` service |
-| `boardgames-dev-db` | 5433 | Board game platform dev database; see [SETUP_boardgames.md](SETUP_boardgames.md) |
+| `boardgames` | 8110 | Board game platform (prod), with its database `boardgames-db`; see [SETUP_boardgames.md](SETUP_boardgames.md) |
+| `boardgames-dev-db` | 5433 | Board game platform dev database, used by the app running on the PCs |
 | `tailscale` | — | Remote access, see [Tailscale](#tailscale-one-time) below and `/shared/linux_settings/docs/SETUP_tailscale.md` for the PCs |
 
 qBittorrent is a UGOS App Center app and stays managed by UGOS.

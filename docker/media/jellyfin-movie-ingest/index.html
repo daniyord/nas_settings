@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Movie Ingest</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --border: rgba(11, 11, 11, 0.10);
+  --moved: #0ca30c;
+  --review: #ec835a;
+  --unidentified: #fab219;
+  --pending: #c3c2b7;
+  --error: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --grid: #2c2c2a;
+    --border: rgba(255, 255, 255, 0.10);
+    --pending: #52514e;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --grid: #2c2c2a;
+  --border: rgba(255, 255, 255, 0.10);
+  --pending: #52514e;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.sub { color: var(--ink-2); margin: 0; }
+.sub .err { color: var(--error); }
+.runbar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.tile .label { color: var(--ink-2); display: flex; align-items: center; gap: 6px; }
+.tile .value { font-size: 26px; font-weight: 600; margin-top: 2px; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+button {
+  font: inherit; color: var(--ink); cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+}
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; }
+td.time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+td a { color: inherit; }
+td .target { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+.state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.empty { color: var(--muted); padding: 16px 8px; }
+.msg { color: var(--error); font-size: 13px; }
+.now { margin: 0 0 10px; min-height: 1.4em; }
+.now.idle { color: var(--muted); }
+.now .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--moved); margin-right: 8px; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .now .dot { animation: none; } }
+.log { list-style: none; margin: 0; padding: 8px 10px; max-height: 280px; overflow: auto; background: var(--page);
+  border: 1px solid var(--grid); border-radius: 6px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.log li { white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
+.log .time { color: var(--muted); }
+.log .kind { font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Jellyfin: нови филми</h1>
+  <div class="runbar">
+    <p class="sub" id="run">Зареждане…</p>
+    <button type="button" id="run-now">Пусни сега</button>
+  </div>
+
+  <section class="card">
+    <h2>В момента</h2>
+    <p class="now idle" id="now"></p>
+    <ol class="log" id="log"><li class="empty">Още няма събития от последния старт на услугата.</li></ol>
+  </section>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="card">
+    <h2>Неподредени филми</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Библиотека</th><th>Папка / файл</th><th>Състояние</th><th>Детайл</th><th>Проверено</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Субтитри</h2>
+    <p class="sub" id="sync-run" style="margin-bottom:12px"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Филм / сериал</th><th>Субтитри</th><th>Резултат</th><th>Проверено</th></tr></thead>
+        <tbody id="subtitles"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Последно подредени</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Кога</th><th>Промяна</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const STATES = [
+  { key: "review", label: "За преглед", icon: "!" },
+  { key: "unidentified", label: "Неразпознати", icon: "?" },
+  { key: "pending", label: "Чакащи", icon: "…" },
+];
+const byKey = Object.fromEntries(STATES.map(s => [s.key, s]));
+let data = { items: [], recent: [], run: {} };
+
+const el = (tag, props = {}, ...children) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const child of children) node.append(child);
+  return node;
+};
+const swatch = key => {
+  const s = el("span", { className: "swatch" });
+  s.style.background = `var(--${key})`;
+  return s;
+};
+const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleString("bg-BG", { dateStyle: "short", timeStyle: "short" }) : "—";
+const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
+
+function renderRun() {
+  const { started, finished, error, interval } = data.run;
+  const node = document.getElementById("run");
+  node.replaceChildren();
+  if (!started) { node.append("Първото минаване още не е започнало."); return; }
+  const running = !finished || finished < started;
+  const button = document.getElementById("run-now");
+  button.disabled = running;
+  button.textContent = running ? "Върви…" : "Пусни сега";
+  node.append(running
+    ? `Минаване в момента (от ${fmtTime(started)}).`
+    : `Последно минаване: ${fmtTime(finished)} · на всеки ${Math.round(interval / 60)} мин.`);
+  if (error) node.append(" ", el("span", { className: "err", textContent: `Грешка: ${error}` }));
+}
+
+function renderTiles() {
+  const counts = Object.fromEntries(STATES.map(s => [s.key, 0]));
+  for (const item of data.items) counts[item.state] = (counts[item.state] || 0) + 1;
+  document.getElementById("tiles").replaceChildren(...STATES.map(s => el("div", { className: "tile" },
+    el("div", { className: "label" }, swatch(s.key), `${s.icon} ${s.label}`),
+    el("div", { className: "value", textContent: counts[s.key] }))));
+}
+
+function confirmButton(item) {
+  const msg = el("span", { className: "msg" });
+  const button = el("button", { type: "button", textContent: "Потвърди match-а" });
+  button.onclick = async () => {
+    button.disabled = true;
+    msg.textContent = "";
+    try {
+      const res = await fetch(`api/items/${encodeURIComponent(item.id)}/confirm`, { method: "POST" });
+      if (!res.ok) throw new Error((await res.json()).detail || res.status);
+      refresh();
+    } catch (e) {
+      msg.textContent = `${e.message || e}`;
+      button.disabled = false;
+    }
+  };
+  return el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:6px" }, button, msg);
+}
+
+function renderTable() {
+  const order = Object.fromEntries(STATES.map((s, i) => [s.key, i]));
+  const items = [...data.items].sort((a, b) => order[a.state] - order[b.state] || a.file.localeCompare(b.file));
+  const tbody = document.getElementById("tbody");
+  if (!items.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "Всички филми са подредени." })));
+    return;
+  }
+  tbody.replaceChildren(...items.map(item => {
+    const s = byKey[item.state] || { label: item.state, icon: "" };
+    const name = el("td", {}, el("a", { href: jellyfinLink(item.id), target: "_blank", textContent: item.file }));
+    if (item.target) name.append(el("div", { className: "target", textContent: `→ ${item.target}` }));
+    const detail = el("td", { textContent: item.detail });
+    if (item.confirm) detail.append(confirmButton(item));
+    return el("tr", {},
+      el("td", { textContent: item.library }),
+      name,
+      el("td", {}, el("span", { className: "state" }, swatch(item.state), `${s.icon} ${s.label}`)),
+      detail,
+      el("td", { className: "time", textContent: fmtTime(item.checked) }));
+  }));
+}
+
+function renderRecent() {
+  const tbody = document.getElementById("recent");
+  if (!data.recent.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 2, className: "empty", textContent: "Още няма подредени филми." })));
+    return;
+  }
+  tbody.replaceChildren(...data.recent.map(r => el("tr", {},
+    el("td", { className: "time", textContent: fmtTime(r.at) }),
+    el("td", { textContent: r.detail }))));
+}
+
+const SUB_STATES = {
+  offset: ["Разминават се", "review"], failed: ["Неуспешна проверка", "unidentified"],
+  fixed: ["Поправени", "moved"], dismissed: ["Оставени", "pending"],
+};
+
+function subtitleAction(sub, action, label) {
+  const button = el("button", { type: "button", textContent: label });
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const res = await fetch(`api/subtitles/${sub.id}/${action}`, { method: "POST" });
+      if (!res.ok) alert((await res.json()).detail || res.status);
+    } finally {
+      refresh();
+    }
+  };
+  return button;
+}
+
+function renderSubtitles() {
+  const { run, counts, items } = data.subtitles || { run: {}, counts: {}, items: [] };
+  const line = document.getElementById("sync-run");
+  const checked = Object.values(counts).reduce((a, b) => a + b, 0);
+  line.replaceChildren(`Проверени: ${checked} (наред: ${counts.ok || 0})`);
+  if (run.queued) line.append(` · чакат: ${run.queued}`);
+  if (run.current) line.append(` · сега: ${run.current}`);
+  const order = Object.keys(SUB_STATES);
+  const rows = [...items].sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || b.checked_at - a.checked_at);
+  const tbody = document.getElementById("subtitles");
+  if (!rows.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "Няма субтитри с разминаване." })));
+    return;
+  }
+  tbody.replaceChildren(...rows.map(sub => {
+    const parts = sub.path.split("/");
+    const [label, color] = SUB_STATES[sub.state] || [sub.state, "pending"];
+    const result = el("td", {}, el("span", { className: "state" }, swatch(color), label), el("div", { textContent: sub.detail }));
+    if (sub.state === "offset") {
+      result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" },
+        subtitleAction(sub, "fix", "Поправи"), subtitleAction(sub, "dismiss", "Остави така")));
+    }
+    return el("tr", {},
+      el("td", { textContent: sub.label }),
+      el("td", { textContent: parts[parts.length - 1] }),
+      result,
+      el("td", { className: "time", textContent: fmtTime(sub.checked_at) }));
+  }));
+}
+
+async function refresh() {
+  try {
+    data = await (await fetch("api/status")).json();
+  } catch (e) {
+    document.getElementById("run").textContent = `Няма връзка със сървъра: ${e}`;
+    return;
+  }
+  renderRun();
+  renderTiles();
+  if (!document.getElementById("tbody").contains(document.activeElement)) renderTable();
+  renderRecent();
+  renderSubtitles();
+}
+
+document.getElementById("run-now").onclick = async e => {
+  e.target.disabled = true;
+  await fetch("api/run", { method: "POST" });
+  pollActivity();
+};
+
+const LOG_KIND = {
+  moved: ["Подреден", "moved"], sorted: ["Сортиране", null], confirmed: ["Потвърден", null],
+  error: ["Грешка", "error"], rescan: ["Опресняване", null],
+  subtitles: ["Субтитри", "review"], checked: ["Субтитри", null], fixed: ["Поправени", "moved"], dismissed: ["Оставени", null],
+};
+let logSeq = 0;
+let logBoot = null;
+let activityTimer = null;
+function renderLogLine(a) {
+  const [word, ...rest] = a.text.split(" ");
+  const [label, color] = LOG_KIND[word] || [word, null];
+  const kind = el("span", { className: "kind", textContent: label });
+  if (color) kind.style.color = `var(--${color})`;
+  return el("li", {}, el("span", { className: "time", textContent: new Date(a.at * 1000).toLocaleTimeString("bg-BG") + " " }), kind, " " + rest.join(" "));
+}
+async function pollActivity() {
+  let running = false;
+  try {
+    let res = await (await fetch(`api/activity?after=${logSeq}`)).json();
+    // After a restart of the service its lines are numbered from 1 again, so the log starts over
+    if (logBoot !== res.boot) {
+      if (logBoot !== null) {
+        logSeq = 0;
+        document.getElementById("log").replaceChildren();
+        res = await (await fetch("api/activity?after=0")).json();
+      }
+      logBoot = res.boot;
+    }
+    const run = res.run;
+    running = run.started && (!run.finished || run.finished < run.started);
+    const sync = res.sync || {};
+    const now = document.getElementById("now");
+    now.className = running || sync.current ? "now" : "now idle";
+    now.replaceChildren(...(running
+      ? [el("span", { className: "dot" }), run.current || "работи…"]
+      : sync.current
+        ? [el("span", { className: "dot" }), `Субтитри: ${sync.current}`, sync.queued > 1 ? ` · чакат: ${sync.queued - 1}` : ""]
+        : [run.finished ? `Чака следващото минаване (последно: ${fmtTime(run.finished)}).` : "Чака първото минаване."]));
+    if (sync.current) running = true;
+    if (res.lines.length) {
+      const log = document.getElementById("log");
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30;
+      log.querySelector(".empty")?.remove();
+      log.append(...res.lines.map(renderLogLine));
+      while (log.children.length > 300) log.firstChild.remove();
+      if (atBottom) log.scrollTop = log.scrollHeight;
+      logSeq = res.lines[res.lines.length - 1].seq;
+      refresh();
+    }
+    if (data.run && JSON.stringify(data.run) !== JSON.stringify(run)) { data.run = run; renderRun(); }
+  } catch (e) { }
+  clearTimeout(activityTimer);
+  activityTimer = setTimeout(pollActivity, running ? 1000 : 5000);
+}
+
+refresh();
+setInterval(refresh, 30000);
+pollActivity();
+</script>
+</body>
+</html>

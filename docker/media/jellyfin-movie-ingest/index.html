@@ -89,7 +89,7 @@ td .target { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
 </head>
 <body>
 <main>
-  <h1>Jellyfin: нови филми</h1>
+  <h1>Jellyfin: нови филми и сериали</h1>
   <div class="runbar">
     <p class="sub" id="run">Зареждане…</p>
     <button type="button" id="run-now">Пусни сега</button>
@@ -104,7 +104,7 @@ td .target { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
   <div class="tiles" id="tiles"></div>
 
   <section class="card">
-    <h2>Неподредени филми</h2>
+    <h2>Неподредени филми и сериали</h2>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Библиотека</th><th>Папка / файл</th><th>Състояние</th><th>Детайл</th><th>Проверено</th></tr></thead>
@@ -203,7 +203,7 @@ function renderTable() {
   const items = [...data.items].sort((a, b) => order[a.state] - order[b.state] || a.file.localeCompare(b.file));
   const tbody = document.getElementById("tbody");
   if (!items.length) {
-    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "Всички филми са подредени." })));
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "Всички филми и сериали са подредени." })));
     return;
   }
   tbody.replaceChildren(...items.map(item => {
@@ -224,7 +224,7 @@ function renderTable() {
 function renderRecent() {
   const tbody = document.getElementById("recent");
   if (!data.recent.length) {
-    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 2, className: "empty", textContent: "Още няма подредени филми." })));
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 2, className: "empty", textContent: "Още няма подредени филми и сериали." })));
     return;
   }
   tbody.replaceChildren(...data.recent.map(r => el("tr", {},

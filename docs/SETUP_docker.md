@@ -31,7 +31,7 @@ A new group gets its own folder with a `docker-compose.yml` (and `.env` if it ne
 |---------|------|-------|
 | `jellyfin` | 8096 | Media from `/volume1/Movies1`, `/volume2/Movies2`, `/volume3/Movies3` |
 | `jellyfin-tpdb-match` | 8097 | ThePornDB matcher with a status page for the adult library |
-| `jellyfin-movie-ingest` | 8098 | Renames new movies in the film libraries after Jellyfin's match (`Title (Year) [imdbid-…]`), sets their Bulgarian sort name, checks subtitle sync with `ffsubsync`; status page to confirm doubtful matches and fix subtitles |
+| `jellyfin-movie-ingest` | 8098 | Renames new movies in the film libraries after Jellyfin's match (`Title (Year) [imdbid-…]`) and organizes series release folders (`S01` in the name) into `Title (Year) [imdbid-…]/Season NN/SxxEyy - Title`, sets their Bulgarian sort name, checks subtitle sync with `ffsubsync`; status page to confirm doubtful matches and fix subtitles |
 | `calibre-web` | 8083 | Library at `/volume1/Common/Other/Books/Calibre`; includes `calibredb` via `DOCKER_MODS`; built from `docker/books/calibre-web` to add the `calibre-ingest` service |
 | `boardgames` | 8110 | Board game platform (prod), with its database `boardgames-db`; see [SETUP_boardgames.md](SETUP_boardgames.md) |
 | `boardgames-dev-db` | 5433 | Board game platform dev database, used by the app running on the PCs |

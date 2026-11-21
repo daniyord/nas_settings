@@ -6,6 +6,7 @@ include:
   - media/docker-compose.yml
   - books/docker-compose.yml
   - boardgames/docker-compose.yml
+  - ci/docker-compose.yml
 
 services:
   tailscale:

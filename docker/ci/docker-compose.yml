@@ -1,0 +1,60 @@
+# Self-hosted GitHub Actions runner for daniyord/boardgames (docs/SETUP_docker.md). Included from ../docker-compose.yml;
+# variables come from the .env next to this file.
+# Only for private repos: on a public one any fork's PR would run its code here.
+services:
+  # Private Docker daemon for the jobs' service containers (postgres). The runner shares its network namespace, so a
+  # service's published port lands on the runner's localhost; on the NAS's own localhost, 5432 is UGOS's Postgres.
+  # It also keeps CI containers away from the NAS daemon and its containers.
+  github-runner-docker:
+    image: docker:29-dind
+    container_name: github-runner-docker
+    restart: unless-stopped
+    privileged: true
+    # An explicit dockerd command skips the entrypoint's default tcp://0.0.0.0:2375 listener: unix socket only
+    command: ["dockerd", "--host=unix:///var/run/dind/docker.sock"]
+    networks:
+      - ci
+    # Service containers are nested in this container's cgroup, so this caps them too
+    mem_limit: 1g
+    cpus: 2
+    volumes:
+      - github-runner-docker-sock:/var/run/dind
+      - /volume1/ServerConfigurations/GitHubRunner/docker:/var/lib/docker
+      # Same path as in the runner, so a workspace path the runner passes to docker resolves here too
+      - /volume1/ServerConfigurations/GitHubRunner/work:/volume1/ServerConfigurations/GitHubRunner/work
+
+  github-runner:
+    image: myoung34/github-runner:latest
+    container_name: github-runner
+    restart: unless-stopped
+    depends_on:
+      - github-runner-docker
+    network_mode: service:github-runner-docker
+    environment:
+      RUNNER_SCOPE: repo
+      REPO_URL: https://github.com/daniyord/boardgames
+      # Used to fetch a fresh registration token on every start: an ephemeral runner exits after each job and
+      # restart: unless-stopped brings it back as a new registration
+      # :- rather than :?, so a missing token only breaks this runner, not compose up for the whole nas stack
+      ACCESS_TOKEN: ${GITHUB_RUNNER_ACCESS_TOKEN:-}
+      EPHEMERAL: "true"
+      RUNNER_NAME_PREFIX: nas
+      # Added to the default self-hosted, Linux, X64
+      LABELS: nas
+      RUNNER_WORKDIR: /volume1/ServerConfigurations/GitHubRunner/work
+      DOCKER_HOST: unix:///var/run/dind/docker.sock
+      TZ: Europe/Sofia
+    mem_limit: 3g
+    cpus: 4
+    volumes:
+      - github-runner-docker-sock:/var/run/dind
+      # setup-node / setup-uv downloads, kept across jobs
+      - /volume1/ServerConfigurations/GitHubRunner/toolcache:/opt/hostedtoolcache
+      - /volume1/ServerConfigurations/GitHubRunner/work:/volume1/ServerConfigurations/GitHubRunner/work
+
+volumes:
+  github-runner-docker-sock:
+
+# Off the stack's default network: CI jobs can't reach the NAS's other containers
+networks:
+  ci:

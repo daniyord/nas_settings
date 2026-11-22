@@ -4,7 +4,7 @@
 # the subtitles, which also get a language when they have none. Every identified movie without one gets
 # the Bulgarian ForcedSortName of the other movies. A match whose title or year doesn't look like the
 # file's name waits for a confirmation on the status page on PORT. A series in a release folder (one with
-# a season in its name) is organized the same way into <Title> (<Year>) [imdbid-tt...]/Season NN/SxxEyy - <Title>,
+# a season in its name, or any series folder that came from qBittorrent) is organized the same way into <Title> (<Year>) [imdbid-tt...]/Season NN/SxxEyy - <Title>,
 # or added to the series' folder when there is one, once every episode's SxxEyy matches Jellyfin's. Separately, the text subtitles of every
 # organized movie are aligned to the speech in the video (ffsubsync); an offset or a frame rate mismatch is
 # only reported, and fixed from the status page, keeping the original as <subtitle>.orig. The history of
@@ -677,7 +677,12 @@ def check_series(item, library, location, admin):
             set_sort_name(item, admin, label)
         return float("inf")
     if not SEASON_TOKEN.search(name):
-        return float("inf")
+        # A downloaded series pack ("Everybody Loves Raymond/... s01/...") is a release folder too; series
+        # folders named by hand never came through qBittorrent
+        with lock:
+            downloaded = db.execute("SELECT 1 FROM events WHERE kind = 'downloaded' AND path = ?", (folder,)).fetchone()
+        if not downloaded:
+            return float("inf")
 
     if not os.path.isdir(folder):
         record(item, library["Name"], name, "pending", "Jellyfin още показва стария път")

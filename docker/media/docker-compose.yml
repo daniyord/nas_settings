@@ -59,7 +59,8 @@ services:
       JELLYFIN_URL: http://jellyfin:8096
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/media/.env}
       LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
-      # Release folders (a season in the name) are organized; the rest only get their subtitles checked
+      # Release folders (a season in the name, or downloaded through qBittorrent) are organized; the rest only get
+      # their subtitles checked
       SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
       # A finished torrent whose category is one of LIBRARIES or SERIES_LIBRARIES is moved into it; the category is kept
       # pointed at whichever of DOWNLOAD_DIRS (qBittorrent's paths) has the most free space
@@ -104,7 +105,7 @@ services:
       - /volume3/Movies3/Downloads:/volume3/Movies3/Downloads
 
   # Tracker search; a grab goes to qbittorrent (host network, WebUI :8888), configured as a download client
-  # in Prowlarr itself: category Филми for Movies, Сериали for TV, prowlarr (left alone by the ingest) for the rest
+  # in Prowlarr itself: category Филми for Movies, Сериали for TV, none (left alone by the ingest) for the rest
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:latest
     container_name: prowlarr

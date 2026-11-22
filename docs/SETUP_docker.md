@@ -20,7 +20,7 @@ Services are grouped one folder per purpose. `docker/docker-compose.yml` holds o
 | Folder | Services | Secrets (gitignored) |
 |--------|----------|----------------------|
 | `docker/` | `tailscale` | `docker/.env`: `TS_AUTHKEY` |
-| `docker/media/` | `jellyfin`, `jellyfin-tpdb-match`, `jellyfin-movie-ingest` (built from their folders in `media/`) | `docker/media/.env`: `JELLYFIN_API_KEY`, `TMDB_API_KEY` |
+| `docker/media/` | `jellyfin`, `jellyfin-tpdb-match`, `jellyfin-movie-ingest` (built from their folders in `media/`), `qbittorrent`, `prowlarr` | `docker/media/.env`: `JELLYFIN_API_KEY`, `TMDB_API_KEY` |
 | `docker/books/` | `calibre-web` (built from `books/calibre-web`) | — |
 | `docker/boardgames/` | `boardgames`, `boardgames-db`, `boardgames-dev-db` | `docker/boardgames/.env`, see [SETUP_boardgames.md](SETUP_boardgames.md) |
 | `docker/ci/` | `github-runner`, `github-runner-docker` | `docker/ci/.env`: `GITHUB_RUNNER_ACCESS_TOKEN` |
@@ -31,14 +31,16 @@ A new group gets its own folder with a `docker-compose.yml` (and `.env` if it ne
 |---------|------|-------|
 | `jellyfin` | 8096 | Media from `/volume1/Movies1`, `/volume2/Movies2`, `/volume3/Movies3` |
 | `jellyfin-tpdb-match` | 8097 | ThePornDB matcher with a status page for the adult library |
-| `jellyfin-movie-ingest` | 8098 | Renames new movies in the film libraries after Jellyfin's match (`Title (Year) [imdbid-…]`) and organizes series release folders (`S01` in the name) into `Title (Year) [imdbid-…]/Season NN/SxxEyy - Title`, sets their Bulgarian sort name, checks subtitle sync with `ffsubsync`; status page to confirm doubtful matches and fix subtitles |
+| `jellyfin-movie-ingest` | 8098 | Renames new movies in the film libraries after Jellyfin's match (`Title (Year) [imdbid-…]`) and organizes series release folders (`S01` in the name) into `Title (Year) [imdbid-…]/Season NN/SxxEyy - Title`, sets their Bulgarian sort name, checks subtitle sync with `ffsubsync`; status page to confirm doubtful matches and fix subtitles. Moves finished qBittorrent downloads in a category named after a film or series library into it |
+| `qbittorrent` | 8888 | Host network; a `Downloads` folder on every volume with a film library (`/volume1/Downloads`, `/volume{2,3}/Movies{2,3}/Downloads`). Each library's category is pointed by `jellyfin-movie-ingest` at the one with the most free space; no WebUI login from Docker's networks |
+| `prowlarr` | 9696 | Tracker search; grabs go to `qbittorrent` with category `Филми` (Movies) or `Сериали` (TV), set in its download client's category mappings; anything else gets `prowlarr`, which is left alone |
 | `calibre-web` | 8083 | Library at `/volume1/Common/Other/Books/Calibre`; includes `calibredb` via `DOCKER_MODS`; built from `docker/books/calibre-web` to add the `calibre-ingest` service |
 | `boardgames` | 8110 | Board game platform (prod), with its database `boardgames-db`; see [SETUP_boardgames.md](SETUP_boardgames.md) |
 | `boardgames-dev-db` | 5433 | Board game platform dev database, used by the app running on the PCs |
 | `github-runner` | — | Self-hosted GitHub Actions runner for `daniyord/boardgames`, see [GitHub Actions runner](#github-actions-runner) |
 | `tailscale` | — | Remote access, see [Tailscale](#tailscale-one-time) below and `/shared/linux_settings/docs/SETUP_tailscale.md` for the PCs |
 
-qBittorrent is a UGOS App Center app and stays managed by UGOS.
+To download a film or a series, give the torrent in qBittorrent the category named after its library (`Филми`, `Филми - детски`, `Филми - български`, `Филми - руски`, `Сериали`, `Сериали - детски`, `Сериали - български`); Prowlarr already sets `Филми` or `Сериали`, so only the other ones are changed by hand while it downloads. Once it finishes, `jellyfin-movie-ingest` moves it into that library on the same disk (a rename) and drops the torrent, so nothing is seeded. Every torrent gets its own folder (Create subfolder), so a single episode becomes a release folder that is organized into its series; an episode of a series already in the library is moved, while it downloads, to the download folder on that series' disk.
 
 ## Calibre-Web
 

@@ -8,11 +8,16 @@
 # or added to the series' folder when there is one, once every episode's SxxEyy matches Jellyfin's. Separately, the text subtitles of every
 # organized movie are aligned to the speech in the video (ffsubsync); an offset or a frame rate mismatch is
 # only reported, and fixed from the status page, keeping the original as <subtitle>.orig. The history of
-# every action, the confirmations and the subtitle checks live in a SQLite database in DATA_DIR.
+# every action, the confirmations and the subtitle checks live in a SQLite database in DATA_DIR. A finished
+# torrent in a qBittorrent category named after a library is moved into that library's folder on the same
+# disk (a rename, never a copy) and dropped from qBittorrent, which is where the steps above take over.
+# That category is kept pointed at the download folder on the library's disk with the most free space; a
+# downloading episode of a series that's already organized is moved to the download folder on that series' disk.
 
 import collections
 import difflib
 import hashlib
+import http.cookiejar
 import json
 import os
 import re
@@ -39,6 +44,25 @@ SERIES_LIBRARIES = [s.strip() for s in os.environ.get("SERIES_LIBRARIES", "Се�
 INTERVAL = int(os.environ.get("INTERVAL", "300"))
 PORT = int(os.environ.get("PORT", "8098"))
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
+# Finished torrents whose qBittorrent category is the name of one of LIBRARIES or SERIES_LIBRARIES are moved
+# into it; empty turns this off
+QBIT_URL = os.environ.get("QBIT_URL", "").rstrip("/")
+QBIT_USER = os.environ.get("QBIT_USER", "")
+QBIT_PASSWORD = os.environ.get("QBIT_PASSWORD", "")
+DOWNLOAD_INTERVAL = int(os.environ.get("DOWNLOAD_INTERVAL", "60"))
+
+
+def path_map(text):
+    return [tuple(p.strip().split("=", 1)) for p in text.split(",") if "=" in p]
+
+
+# qBittorrent's paths as seen here, e.g. /downloads=/volume1/Downloads
+QBIT_PATHS = path_map(os.environ.get("QBIT_PATHS", ""))
+# qBittorrent's download folder on each disk; a library's category is pointed at the one with the most free space
+DOWNLOAD_DIRS = [s.strip() for s in os.environ.get("DOWNLOAD_DIRS", "").split(",") if s.strip()]
+# Jellyfin's library folders as seen through the whole-volume mounts: a move within one mount is a rename,
+# while across two mounts (even of the same disk) it would be a copy
+VOLUME_PATHS = path_map(os.environ.get("VOLUME_PATHS", ""))
 # ctime rather than mtime: copy tools restore the source's mtime, but every write moves ctime
 SETTLE_AFTER = 120
 # Jellyfin writes the NFO first and the artwork right after; moving in between would leave images behind
@@ -76,6 +100,11 @@ last_run = {"started": None, "finished": None, "error": None, "interval": INTERV
 locations = []
 series_locations = []
 sync_wake = threading.Event()
+# Torrents that couldn't be moved; tried again after a restart
+failed_downloads = set()
+# Downloading series episodes already looked up in Jellyfin
+followed = set()
+qbit_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 sync_run = {"current": None, "queued": 0}
 activity = collections.deque(maxlen=500)
 activity_seq = [0]
@@ -783,6 +812,132 @@ def ingest_loop():
         wake.wait(max(1, min(INTERVAL, next_wake - time.time() + 1)))
 
 
+def translate(path, pairs):
+    for src, dst in pairs:
+        src = src.rstrip("/")
+        if path == src or path.startswith(src + "/"):
+            return dst.rstrip("/") + path[len(src):]
+    return None
+
+
+def qbit(path, **form):
+    data = urllib.parse.urlencode(form).encode() if form else None
+    headers = {"Referer": QBIT_URL}
+    for attempt in (0, 1):
+        try:
+            with qbit_opener.open(urllib.request.Request(QBIT_URL + "/api/v2/" + path, data, headers), timeout=30) as response:
+                raw = response.read()
+            return json.loads(raw) if raw[:1] in (b"[", b"{") else raw.decode()
+        except urllib.error.HTTPError as e:
+            if e.code != 403 or attempt:
+                raise
+            login = urllib.parse.urlencode({"username": QBIT_USER, "password": QBIT_PASSWORD}).encode()
+            with qbit_opener.open(urllib.request.Request(QBIT_URL + "/api/v2/auth/login", login, headers), timeout=30) as response:
+                if response.read().strip() != b"Ok.":
+                    raise RuntimeError("qBittorrent rejected QBIT_USER / QBIT_PASSWORD")
+
+
+def library_devices(library):
+    return {os.stat(host).st_dev for l in library["Locations"] if (host := translate(l, VOLUME_PATHS)) and os.path.isdir(host)}
+
+
+def choose_save_paths(folders):
+    """Points each library's category at the download folder with the most free space among the disks the library is on."""
+    categories = qbit("torrents/categories")
+    for name in LIBRARIES + SERIES_LIBRARIES:
+        if name not in folders:
+            continue
+        devices = library_devices(folders[name])
+        options = [(shutil.disk_usage(local).free, path) for path in DOWNLOAD_DIRS
+                   if (local := translate(path, QBIT_PATHS)) and os.path.isdir(local) and os.stat(local).st_dev in devices]
+        if not options:
+            continue
+        free, best = max(options)
+        current = categories.get(name)
+        if current and current.get("savePath", "").rstrip("/") == best.rstrip("/"):
+            continue
+        qbit("torrents/editCategory" if current else "torrents/createCategory", category=name, savePath=best)
+        log(f"qBittorrent: {name} се сваля в {best} ({free / 1e12:.1f} TB свободни)")
+
+
+def import_downloads(folders, torrents):
+    for torrent in torrents:
+        library, key = torrent["category"], torrent["hash"]
+        if library not in LIBRARIES + SERIES_LIBRARIES or key in failed_downloads or torrent["state"] == "moving":
+            continue
+        label = f"{library}/{torrent['name']}"
+        src = translate(torrent["content_path"], QBIT_PATHS)
+        try:
+            if library not in folders:
+                raise OSError("библиотеката я няма в Jellyfin")
+            if not src or not os.path.exists(src):
+                raise OSError(f"{torrent['content_path']} не се вижда в контейнера (QBIT_PATHS)")
+            device = os.stat(src).st_dev
+            location, folder = next(((l, host) for l in folders[library]["Locations"]
+                                     if (host := translate(l, VOLUME_PATHS)) and os.path.isdir(host) and os.stat(host).st_dev == device),
+                                    (None, None))
+            if not location:
+                raise OSError("библиотеката няма папка на диска, на който е свалено")
+            name = os.path.basename(src.rstrip("/"))
+            if os.path.lexists(os.path.join(folder, name)):
+                raise OSError(f"{name} вече е в {location}")
+            os.rename(src, os.path.join(folder, name))
+        except OSError as e:
+            failed_downloads.add(key)
+            log(f"error {label}: {e}")
+            continue
+        qbit("torrents/delete", hashes=key, deleteFiles="false")
+        path = os.path.join(location, name)
+        jellyfin("/Library/Media/Updated", "POST", {"Updates": [{"Path": path, "UpdateType": "Created"}]})
+        event(path, "downloaded", f"{torrent['content_path']} → {path}", label)
+        wake.set()
+
+
+def series_title(name):
+    """The series' name in a release name, without the year some releases carry ("Severance.2022.S01E01" -> "severance")."""
+    return norm(re.sub(r"[ ._-]*\(?(?:19|20)\d{2}\)?[ ._-]*$", "", release_title(name)))
+
+
+def follow_series(folders, torrents):
+    """Moves a downloading episode of a series that's already in its library to the download folder on that series' disk."""
+    series = {}
+    for torrent in torrents:
+        name, key = torrent["category"], torrent["hash"]
+        if name not in SERIES_LIBRARIES or name not in folders or torrent["progress"] >= 1 or key in followed:
+            continue
+        if name not in series:
+            series[name] = jellyfin("/Items", ParentId=folders[name]["ItemId"], Recursive="true", IncludeItemTypes="Series",
+                                    Fields="Path,OriginalTitle", Limit=100000)["Items"]
+        followed.add(key)
+        title = series_title(torrent["name"])
+        homes = {host for s in series[name] if ORGANIZED.fullmatch(os.path.basename(s.get("Path", "").rstrip("/")))
+                 and title in (norm(s.get("OriginalTitle") or ""), norm(s["Name"]))
+                 and (host := translate(s["Path"], VOLUME_PATHS)) and os.path.isdir(host)}
+        if len(homes) != 1:
+            continue
+        home = homes.pop()
+        device = os.stat(home).st_dev
+        target = next((path for path in DOWNLOAD_DIRS if (local := translate(path, QBIT_PATHS)) and os.path.isdir(local) and os.stat(local).st_dev == device), None)
+        current = translate(torrent["save_path"], QBIT_PATHS)
+        if not target or (current and os.path.isdir(current) and os.stat(current).st_dev == device):
+            continue
+        qbit("torrents/setLocation", hashes=key, location=target)
+        event(home, "followed", f"{torrent['name']}: сваля се в {target}, при {os.path.basename(home)}", f"{name}/{torrent['name']}")
+
+
+def download_loop():
+    while True:
+        try:
+            folders = {f["Name"]: f for f in jellyfin("/Library/VirtualFolders")}
+            choose_save_paths(folders)
+            torrents = qbit("torrents/info")
+            follow_series(folders, torrents)
+            import_downloads(folders, [t for t in torrents if t["progress"] >= 1])
+        except Exception as e:
+            log(f"error qBittorrent: {e!r}")
+        time.sleep(DOWNLOAD_INTERVAL)
+
+
 def synced_path(subtitle):
     return os.path.join(SYNCED_DIR, hashlib.sha1(subtitle.encode()).hexdigest()[:16] + os.path.splitext(subtitle)[1].lower())
 
@@ -1064,4 +1219,6 @@ def dismiss_subtitle(sub_id: int):
 if __name__ == "__main__":
     threading.Thread(target=ingest_loop, daemon=True).start()
     threading.Thread(target=subtitle_loop, daemon=True).start()
+    if QBIT_URL:
+        threading.Thread(target=download_loop, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")

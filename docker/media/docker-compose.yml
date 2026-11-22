@@ -61,6 +61,14 @@ services:
       LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
       # Release folders (a season in the name) are organized; the rest only get their subtitles checked
       SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
+      # A finished torrent whose category is one of LIBRARIES or SERIES_LIBRARIES is moved into it; the category is kept
+      # pointed at whichever of DOWNLOAD_DIRS (qBittorrent's paths) has the most free space
+      QBIT_URL: http://host.docker.internal:8888
+      DOWNLOAD_DIRS: /downloads,/volume2/Movies2/Downloads,/volume3/Movies3/Downloads
+      QBIT_PATHS: /downloads=/volume1/Downloads,/volume2=/volume2,/volume3=/volume3
+      VOLUME_PATHS: /movies1=/volume1/Movies1,/movies2=/volume2/Movies2,/movies3=/volume3/Movies3
+    extra_hosts:
+      - host.docker.internal:host-gateway
     volumes:
       - /volume1/ServerConfigurations/JellyfinMovieIngest:/data
       # Same paths as inside jellyfin, so item paths can be used as is; movies are renamed in place
@@ -68,3 +76,44 @@ services:
       - /volume2/Movies2:/movies2
       - /volume3/Movies3:/movies3
       - /volume5/MoviesAdult/Erotic:/moviesadult/Erotic
+      # Whole volumes, so a download folder and the library are one mount and a download moves with a rename
+      - /volume1:/volume1
+      - /volume2:/volume2
+      - /volume3:/volume3
+
+  # Was the UGOS App Center app (same image); its config moved to ServerConfigurations. Host network keeps
+  # the WebUI on :8888 for Prowlarr. No login from Docker's networks (AuthSubnetWhitelist), for jellyfin-movie-ingest.
+  # A download folder on every volume with a film library: jellyfin-movie-ingest picks the one with the most
+  # free space and moves finished downloads into the library on that disk.
+  # PGID 10 (admin): UGOS grants the Downloads share to the admin group only, as it does dani_yord83 on the host
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUID: 1000
+      PGID: 10
+      TZ: Europe/Sofia
+      WEBUI_PORT: 8888
+      TORRENTING_PORT: 6888
+    volumes:
+      - /volume1/ServerConfigurations/qBittorrent:/config
+      - /volume1/Downloads:/downloads
+      - /volume2/Movies2/Downloads:/volume2/Movies2/Downloads
+      - /volume3/Movies3/Downloads:/volume3/Movies3/Downloads
+
+  # Tracker search; a grab goes to qbittorrent (host network, WebUI :8888), configured as a download client
+  # in Prowlarr itself: category Филми for Movies, Сериали for TV, prowlarr (left alone by the ingest) for the rest
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: Europe/Sofia
+    ports:
+      - 9696:9696
+    volumes:
+      - /volume1/ServerConfigurations/Prowlarr:/config

@@ -58,8 +58,8 @@ services:
     environment:
       JELLYFIN_URL: http://jellyfin:8096
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/media/.env}
-      LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски
-      # Only their subtitles are checked
+      LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
+      # Release folders (a season in the name) are organized; the rest only get their subtitles checked
       SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
     volumes:
       - /volume1/ServerConfigurations/JellyfinMovieIngest:/data
@@ -67,3 +67,4 @@ services:
       - /volume1/Movies1:/movies1
       - /volume2/Movies2:/movies2
       - /volume3/Movies3:/movies3
+      - /volume5/MoviesAdult/Erotic:/moviesadult/Erotic

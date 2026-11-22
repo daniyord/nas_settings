@@ -217,7 +217,9 @@ def id_tag(item):
 
 def clean_title(title):
     title = re.sub(r"\s*:\s*", " - ", title)
-    title = re.sub(r'[\\/?*"<>|]', "", title)
+    # "9 1/2 Weeks" and "AC/DC" rather than "9 12 Weeks" and "ACDC"
+    title = re.sub(r"\s*\b1/2\b", "½", title).replace("/", "-")
+    title = re.sub(r'[\\?*"<>|]', "", title)
     return re.sub(r"\s+", " ", title).strip(" .")
 
 
@@ -325,8 +327,8 @@ def make_dir(path, like):
     os.mkdir(path)
     parent = os.stat(like)
     os.chown(path, parent.st_uid, parent.st_gid)
-    # UGOS grants access to the library folders through ACLs; their mode reads 000 from here
-    os.chmod(path, parent.st_mode & 0o7777 or 0o777)
+    # UGOS grants access to the library folders through ACLs, so their mode reads 000 or 770 from here; every folder in them is 777
+    os.chmod(path, 0o777)
 
 
 def plan(folder, stem, target, own):
@@ -406,8 +408,8 @@ def set_sort_name(item, admin, label):
         return
     full = jellyfin(f"/Items/{item['Id']}", userId=admin["Id"])
     sort_name = bg_sort(full["Name"])
-    # Never over one set by hand
-    if full.get("ForcedSortName") or not sort_name:
+    # Never over one set by hand; a name that is the folder's means TMDB had no title in the metadata language
+    if full.get("ForcedSortName") or not sort_name or ORGANIZED.fullmatch(full["Name"]):
         return
     full["ForcedSortName"] = sort_name
     jellyfin(f"/Items/{item['Id']}", "POST", full)
@@ -433,6 +435,9 @@ def check(item, library, location, admin):
     nfo = any(is_xml(os.path.join(folder, n)) for n in ("movie.nfo", stem + ".nfo"))
 
     if len(parts) == 2 and ORGANIZED.fullmatch(parts[0]) and (stem == parts[0] or stem.startswith(parts[0] + " - ")):
+        if identified and nfo and ORGANIZED.fullmatch(item["Name"]):
+            record(item, library["Name"], name, "review", "Jellyfin го показва с името на папката (TMDB няма заглавие на български): сложи заглавие в Jellyfin и го заключи")
+            return float("inf")
         with lock:
             status.pop(item["Id"], None)
         # Only once the metadata is in, as the name is the filename's until then

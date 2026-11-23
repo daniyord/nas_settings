@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подреждане</title>
+<link rel="stylesheet" href="common/page.css">
+</head>
+<body>
+<main>
+  <nav class="bar" id="bar"></nav>
+  <h1>Jellyfin: нови филми и сериали</h1>
+  <div class="runbar">
+    <p class="sub" id="run">Зареждане…</p>
+    <button type="button" id="run-now">Пусни сега</button>
+  </div>
+
+  <section class="card">
+    <h2>В момента</h2>
+    <p class="now idle" id="now"></p>
+    <ol class="log" id="log"><li class="empty">Още няма събития от последния старт на услугата.</li></ol>
+  </section>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="card">
+    <h2>Неподредени филми и сериали</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Библиотека</th><th>Папка / файл</th><th>Състояние</th><th>Детайл</th><th>Проверено</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Последно подредени</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Кога</th><th>Промяна</th></tr></thead>
+        <tbody id="recent"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="common/page.js"></script>
+<script>
+const STATES = [
+  { key: "review", label: "За преглед", icon: "!" },
+  { key: "unidentified", label: "Неразпознати", icon: "?" },
+  { key: "pending", label: "Чакащи", icon: "…" },
+];
+const byKey = Object.fromEntries(STATES.map(s => [s.key, s]));
+let data = { items: [], recent: [], run: {} };
+const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
+
+function renderRun() {
+  const { started, finished, error, interval } = data.run;
+  const node = document.getElementById("run");
+  node.replaceChildren();
+  if (!started) { node.append("Първото минаване още не е започнало."); return; }
+  const running = !finished || finished < started;
+  const button = document.getElementById("run-now");
+  button.disabled = running;
+  button.textContent = running ? "Върви…" : "Пусни сега";
+  node.append(running
+    ? `Минаване в момента (от ${fmtTime(started)}).`
+    : `Последно минаване: ${fmtTime(finished)} · на всеки ${Math.round(interval / 60)} мин.`);
+  if (error) node.append(" ", el("span", { className: "err", textContent: `Грешка: ${error}` }));
+}
+
+function renderTiles() {
+  const counts = Object.fromEntries(STATES.map(s => [s.key, 0]));
+  for (const item of data.items) counts[item.state] = (counts[item.state] || 0) + 1;
+  document.getElementById("tiles").replaceChildren(...STATES.map(s => el("div", { className: "tile" },
+    el("div", { className: "label" }, swatch(s.key), `${s.icon} ${s.label}`),
+    el("div", { className: "value", textContent: counts[s.key] }))));
+}
+
+function confirmButton(item) {
+  const msg = el("span", { className: "msg" });
+  const button = el("button", { type: "button", textContent: "Потвърди match-а" });
+  button.onclick = async () => {
+    button.disabled = true;
+    msg.textContent = "";
+    try {
+      const res = await fetch(`api/items/${encodeURIComponent(item.id)}/confirm`, { method: "POST" });
+      if (!res.ok) throw new Error((await res.json()).detail || res.status);
+      refresh();
+    } catch (e) {
+      msg.textContent = `${e.message || e}`;
+      button.disabled = false;
+    }
+  };
+  return el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:6px" }, button, msg);
+}
+
+function renderTable() {
+  const order = Object.fromEntries(STATES.map((s, i) => [s.key, i]));
+  const items = [...data.items].sort((a, b) => order[a.state] - order[b.state] || a.file.localeCompare(b.file));
+  const tbody = document.getElementById("tbody");
+  if (!items.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 5, className: "empty", textContent: "Всички филми и сериали са подредени." })));
+    return;
+  }
+  tbody.replaceChildren(...items.map(item => {
+    const s = byKey[item.state] || { label: item.state, icon: "" };
+    const name = el("td", {}, el("a", { href: jellyfinLink(item.id), target: "_blank", textContent: item.file }));
+    if (item.target) name.append(el("div", { className: "target", textContent: `→ ${item.target}` }));
+    const detail = el("td", { textContent: item.detail });
+    if (item.confirm) detail.append(confirmButton(item));
+    return el("tr", {},
+      el("td", { textContent: item.library }),
+      name,
+      el("td", {}, el("span", { className: "state" }, swatch(item.state), `${s.icon} ${s.label}`)),
+      detail,
+      el("td", { className: "time", textContent: fmtTime(item.checked) }));
+  }));
+}
+
+function renderRecent() {
+  const tbody = document.getElementById("recent");
+  if (!data.recent.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 2, className: "empty", textContent: "Още няма подредени филми и сериали." })));
+    return;
+  }
+  tbody.replaceChildren(...data.recent.map(r => el("tr", {},
+    el("td", { className: "time", textContent: fmtTime(r.at) }),
+    el("td", { textContent: r.detail }))));
+}
+
+async function refresh() {
+  try {
+    data = await (await fetch("api/status")).json();
+  } catch (e) {
+    document.getElementById("run").textContent = `Няма връзка със сървъра: ${e}`;
+    return;
+  }
+  renderRun();
+  renderTiles();
+  if (!document.getElementById("tbody").contains(document.activeElement)) renderTable();
+  renderRecent();
+}
+
+const LOG_KIND = {
+  moved: ["Подреден", "moved"], downloaded: ["Свален", "moved"], followed: ["Пренасочен", null], sorted: ["Сортиране", null],
+  confirmed: ["Потвърден", null], error: ["Грешка", "error"], rescan: ["Опресняване", null],
+};
+
+const pollActivity = liveLog({
+  kinds: LOG_KIND,
+  now(res) {
+    const run = res.run;
+    const running = run.started && (!run.finished || run.finished < run.started);
+    const now = document.getElementById("now");
+    now.className = running ? "now" : "now idle";
+    now.replaceChildren(...(running
+      ? [el("span", { className: "dot" }), run.current || "работи…"]
+      : [run.finished ? `Чака следващото минаване (последно: ${fmtTime(run.finished)}).` : "Чака първото минаване."]));
+    if (data.run && JSON.stringify(data.run) !== JSON.stringify(run)) { data.run = run; renderRun(); }
+    return running;
+  },
+  onLines() { refresh(); renderBar(); },
+});
+
+document.getElementById("run-now").onclick = async e => {
+  e.target.disabled = true;
+  await fetch("api/run", { method: "POST" });
+  pollActivity();
+};
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

@@ -26,5 +26,6 @@ down:
 lint:
 	uv run --frozen pre-commit run --all-files
 
+# Each folder in its own pytest: the services' modules share names (app, config, state)
 test:
-	uv run --frozen pytest
+	@set -e; for d in docker/*/*/tests; do uv run --frozen pytest -q $$d; done

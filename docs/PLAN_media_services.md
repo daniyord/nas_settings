@@ -12,7 +12,7 @@
 | Етап | Какво | Състояние |
 |------|-------|-----------|
 | 0 | Среда за писане: линтери, типове, тестове | готов |
-| 1 | Разделяне на `media-ingest` и `media-subtitles`, без промяна в поведението | не е започнат |
+| 1 | Разделяне на `media-ingest` и `media-subtitles`, без промяна в поведението | работи на NAS-а; чака проверка на живо и махане на стария |
 | 2 | Наши NFO и картинки, Jellyfin като код, нощен експорт на гледаното | не е започнат |
 | 3 | Jellyfin без онлайн източници и плъгини, старите папки към новия NFO | не е започнат |
 | 4 | „Порно“ и „Порно - сцени“ на новата схема | не е започнат |
@@ -73,63 +73,70 @@
 
 ## Етап 1: разделяне без промяна в поведението
 
-Резултат: два контейнера правят точно това, което прави `jellyfin-movie-ingest` днес; старият се спира.
+Резултат: два контейнера правят точно това, което правеше `jellyfin-movie-ingest`; старият е спрян. Всяка функция е
+преместена без промяна в логиката (сравнено по AST); нарочните разлики са само в 1.4 и в това, че отговор за аудиото
+събужда проверката веднага.
 
 ### 1.1 Обща библиотека `docker/media/common/`
 
-- [ ] `jellyfin.py`: `jellyfin()` (с `CollapseBoxSetItems=false` по подразбиране), `path_map`, обновяване на елемент по
-  път (`refresh_video` с кеша на ID-тата).
-- [ ] `activity.py`: `log`, `event`, `seed_activity`, живият лог за `/api/activity` (еднакъв в двете услуги).
-- [ ] `files.py`: `owner`, `make_dir`, писане на нов файл с правата и собственика на видеото (UGOS ACL, режим 666).
-- [ ] `bar.js` / `bar.css`: горната лента с двете връзки и броячите; адресите на двете услуги идват от env.
-- [ ] Двата Dockerfile-а копират `common/` (build context `docker/media/`).
+- [x] `jellyfin.py`: `jellyfin()` (с `CollapseBoxSetItems=false` по подразбиране) и `library_locations`.
+- [x] `activity.py`: `open_db` (базата с таблицата `events`) и `Activity` — `log`, `event`, живият лог за
+  `/api/activity`, започващ от последните събития след рестарт.
+- [x] `media.py`: общото за файловете — `VIDEO_EXTS`, `SUBTITLE`, `ORGANIZED`, `EPISODE`, `LANGUAGES`, `SETTLE_AFTER`,
+  `Conflict`, `bulgarian_text`, `subtitle_language`, `with_language`. (`owner`, `make_dir` и `refresh_video` се ползват
+  само от едната услуга и останаха в нея.)
+- [x] `web.py`, `page.css`, `page.js`: страницата, общият стил, помощните функции, живият лог и горната лента с
+  броячите от `/api/summary` на двете услуги (с CORS). Портовете на услугите са в `page.js`.
+- [x] Двата Dockerfile-а копират `common/` (build context `docker/media/`).
 
 ### 1.2 `media-ingest` (`docker/media/media-ingest/`, порт 8098)
 
-- [ ] `movies.py`: `norm`, `doubt`, `id_tag`, `clean_title`, `target_name`, `plan`, `ingest`, `set_sort_name`,
-  `bg_sort`, `padded`, `record`, `check`.
-- [ ] `series.py`: `release_title`, `episode_numbers`, `episode_name`, `season_dir`, `episode_plan`, `series_problem`,
-  `organize_series`, `check_series`, `series_title`, `follow_series`.
-- [ ] `downloads.py`: `qbit`, `library_devices`, `choose_save_paths`, `import_downloads`, `download_loop`.
-- [ ] `sidecars.py`: преименуването на субтитри и други файлове заедно с видеото (`subtitle_language`, `with_language`,
-  `foreign_rest`, `generic_name`, `translate`) — остава тук, защото ingest мести файловете.
-- [ ] `app.py`: `run_once`, `ingest_loop`, `/`, `/api/status`, `/api/activity`, `/api/run`, `/api/items/{id}/confirm`,
-  `/api/summary` (чакащи потвърждение).
-- [ ] Таблици: `events`, `confirmed`. Данни: `/volume1/ServerConfigurations/MediaIngest`.
-- [ ] Махане на `sync_wake.set()` след преименуване (новите пътища ги намира `media-subtitles` сама).
+- [x] `names.py`: имената без промени по диска — `bg_sort`, `padded`, `norm`, `doubt`, `id_tag`, `clean_title`,
+  `target_name`, `release_title`, `series_title`, `episode_numbers`, `episode_name`, `season_dir`, `is_xml`,
+  `foreign_rest`, `generic_name`, `owner`.
+- [x] `movies.py`: `make_dir`, `plan`, `ingest`, `set_sort_name`, `check`.
+- [x] `series.py`: `episode_plan`, `series_problem`, `organize_series`, `check_series`.
+- [x] `downloads.py`: `translate`, `qbit`, `library_devices`, `choose_save_paths`, `import_downloads`, `follow_series`,
+  `download_loop`.
+- [x] `config.py`, `state.py` (база, лог, `status`, `record`, `step`), `app.py` (`run_once`, `ingest_loop`,
+  `/api/status`, `/api/activity`, `/api/run`, `/api/items/{id}/confirm`, `/api/summary` — за преглед и неразпознати).
+- [x] Таблици: `events`, `confirmed`. Данни: `/volume1/ServerConfigurations/MediaIngest`.
+- [x] Махнат `sync_wake.set()` след преименуване (новите пътища ги намира `media-subtitles` сама).
 
 ### 1.3 `media-subtitles` (`docker/media/media-subtitles/`, порт 8099)
 
-- [ ] `sync.py`: `subtitle_files`, `subtitle_label`, `pending_subtitles`, `describe`, `video_fps`, `convert_microdvd`,
-  `align`, `check_subtitle`, `safe_to_fix`, `apply_fix`, `auto_fix`; `sync_check.py` както е.
-- [ ] `download.py`: `bulgarian_stream`, `bulgarian_text`, `bulgarian_files`, `wanted_subtitles`, `note_review`,
-  `search_subtitles`, `subtitle_entries`, `subtitle_text`, `install_subtitle`, `record_download`, `download_subtitle`,
-  `download_step`; `bg_subtitles.py` както е.
-- [ ] `audio.py`: `mkv_audio_untagged`, `duration`, `remux_bulgarian`, `tag_audio`.
-- [ ] `app.py`: `subtitle_loop`, `/`, `/api/status`, `/api/activity`, `/api/subtitles/{id}/fix|dismiss|restore`,
-  `/api/audio`, `/api/summary` (разминати субтитри + заглавия без отговор за аудиото).
-- [ ] Таблици: `events`, `subtitles`, `downloads`, `audio`. Данни: `/volume1/ServerConfigurations/MediaSubtitles`
+- [x] `sync.py`: `synced_path`, `subtitle_files`, `pending_subtitles`, `describe`, `safe_to_fix`, `apply_fix`,
+  `auto_fix`, `align`, `check_subtitle`, `video_fps`, `convert_microdvd`, `convert_microdvd_files`; `sync_check.py`.
+- [x] `download.py`: `bulgarian_stream`, `bulgarian_files`, `note_review`, `wanted_subtitles`, `search_subtitles`,
+  `subtitle_entries`, `subtitle_text`, `install_subtitle`, `record_download`, `download_subtitle`, `download_step`;
+  `bg_subtitles.py`.
+- [x] `audio.py`: `audio_untagged`, `duration`, `remux_bulgarian`, `tag_audio`, `answer`.
+- [x] `config.py`, `state.py` (база, лог, папките на библиотеките от Jellyfin при всяко минаване, `subtitle_label`,
+  `refresh_video`), `app.py` (`subtitle_loop`, `/api/status`, `/api/activity`, `/api/subtitles/{id}/fix|dismiss|restore`,
+  `/api/audio`, `/api/summary` — разминати над 20 s и заглавия без отговор за аудиото).
+- [x] Таблици: `events`, `subtitles`, `downloads`, `audio`. Данни: `/volume1/ServerConfigurations/MediaSubtitles`
   (с `subtitle-cache` и `synced`).
-- [ ] Dockerfile: `ffsubsync`, статичният ffmpeg, `libarchive-tools`, `mkvtoolnix` (в `media-ingest` не трябват).
+- [x] Dockerfile: `ffsubsync`, статичният ffmpeg, `libarchive-tools`, `mkvtoolnix` (в `media-ingest` не трябват).
 
 ### 1.4 Преименуване на файлове без повторна проверка
 
-Досега ingest събуждаше проверката след преименуване. Сега `media-subtitles` ще види преименуван субтитър като нов
-файл и ще пусне `ffsubsync` наново.
-
-- [ ] Ред от `subtitles`, чийто път вече го няма, се свързва с нов файл със същите размер и `mtime` (преименуването ги
-  запазва) и се пренася, вместо да се проверява отново; по същия начин `downloads` и `audio` по видео/папка.
-- [ ] Редове за файлове, които ги няма и нямат двойник, се трият при обхождането.
+- [x] Субтитър, преименуван заедно с видеото си, запазва проверката: ред от `subtitles`, чийто път го няма, се пренася
+  на нов файл със същите размер и `mtime`. (`downloads` и `audio` са по подредени пътища, които ingest не мести.)
+- [x] Редове за файлове, които ги няма и нямат двойник, се трият при обхождането.
 
 ### 1.5 Преминаване
 
-- [ ] Скрипт, който разделя сегашния `state.db` на двете нови бази (`events` се копират в двете, другите по таблица)
-  и копира `subtitle-cache` и `synced`.
-- [ ] `docker-compose.yml`: двете услуги със своите монтирания (`media-subtitles` не трябва `/volume*` като цяло, а само
-  библиотеките); `jellyfin-movie-ingest` се спира, но остава в compose, докато не минат няколко дни без проблеми.
-- [ ] Проверка: един нов филм и един сериал минават през qBittorrent → библиотеката; субтитрите им се проверяват;
-  броячите в лентата са верни и на двете страници; `/api/status` на двете показва същото като стария.
-- [ ] `docs/SETUP_docker.md`: редовете за двете услуги вместо `jellyfin-movie-ingest`; старата папка се трие.
+- [x] Еднократен скрипт раздели `state.db` (с `sqlite3` backup; `events` в двете, другите по таблица, броят на редовете
+  проверен) и копира `subtitle-cache` и `synced`; старата папка `JellyfinMovieIngest` е непокътната.
+- [x] `docker-compose.yml`: двете услуги; `media-subtitles` монтира само библиотеките. `jellyfin-movie-ingest` е спрян
+  и стои в профил `old`, за да не го пуска `make up`.
+- [x] Двата образа минаха smoke тест (страници, `/api/status`, `/api/summary` с CORS) преди преминаването; след него
+  `media-ingest` показва същите 4 неподредени, `media-subtitles` същите броеве субтитри и изтегляния.
+- [ ] Проверка на живо: един нов филм и един сериал минават през qBittorrent → библиотеката, субтитрите им се проверяват;
+  двете страници и лентата изглеждат наред в браузър.
+- [x] `docs/SETUP_docker.md` и `docs/PLAN_jellyfin_library.md`: двете услуги вместо `jellyfin-movie-ingest`.
+- [ ] След няколко дни без проблеми: `jellyfin-movie-ingest` се маха от compose, папката му от repo-то, а
+  `/volume1/ServerConfigurations/JellyfinMovieIngest` от NAS-а (с потвърждение).
 
 ## Етап 2: наши NFO и картинки, Jellyfin като код, експорт на гледаното
 

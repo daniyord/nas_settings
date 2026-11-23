@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Субтитри и аудио</title>
+<link rel="stylesheet" href="common/page.css">
+</head>
+<body>
+<main>
+  <nav class="bar" id="bar"></nav>
+  <h1>Jellyfin: субтитри и аудио</h1>
+  <p class="sub" id="error" style="margin-bottom:20px"></p>
+
+  <section class="card">
+    <h2>В момента</h2>
+    <p class="now idle" id="now"></p>
+    <ol class="log" id="log"><li class="empty">Още няма събития от последния старт на услугата.</li></ol>
+  </section>
+
+  <section class="card">
+    <h2>Субтитри</h2>
+    <p class="sub" id="sync-run" style="margin-bottom:12px"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Филм / сериал</th><th>Субтитри</th><th>Резултат</th><th>Проверено</th></tr></thead>
+        <tbody id="subtitles"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Аудио без език: дублаж или субтитри?</h2>
+    <p class="sub" id="review-run" style="margin-bottom:12px"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Филм / сериал</th><th>Видеа</th><th>Аудио</th><th>Отговор</th></tr></thead>
+        <tbody id="review"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Български субтитри от сайтовете</h2>
+    <p class="sub" id="downloads-run" style="margin-bottom:12px"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Филм / сериал</th><th>Видео</th><th>Резултат</th><th>Търсено</th></tr></thead>
+        <tbody id="downloads"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="common/page.js"></script>
+<script>
+let data = {};
+
+const SUB_STATES = {
+  offset: ["Разминават се", "review"], failed: ["Неуспешна проверка", "unidentified"],
+  fixed: ["Поправени", "moved"], dismissed: ["Оставени", "pending"], restored: ["Върнат оригинал", "pending"],
+};
+
+function action(url, body, label) {
+  const button = el("button", { type: "button", textContent: label });
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const options = { method: "POST" };
+      if (body !== undefined) Object.assign(options, { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const res = await fetch(url, options);
+      if (!res.ok) alert((await res.json()).detail || res.status);
+    } finally {
+      refresh();
+      renderBar();
+    }
+  };
+  return button;
+}
+
+function renderSubtitles() {
+  const { run, counts, items } = data.subtitles || { run: {}, counts: {}, items: [] };
+  const line = document.getElementById("sync-run");
+  const checked = Object.values(counts).reduce((a, b) => a + b, 0);
+  line.replaceChildren(`Проверени: ${checked} (наред: ${counts.ok || 0})`);
+  if (run.queued) line.append(` · чакат: ${run.queued}`);
+  if (run.current) line.append(` · сега: ${run.current}`);
+  const order = Object.keys(SUB_STATES);
+  const rows = [...items].sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || b.checked_at - a.checked_at);
+  const tbody = document.getElementById("subtitles");
+  if (!rows.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "Няма субтитри с разминаване." })));
+    return;
+  }
+  tbody.replaceChildren(...rows.map(sub => {
+    const parts = sub.path.split("/");
+    const [label, color] = SUB_STATES[sub.state] || [sub.state, "pending"];
+    const result = el("td", {}, el("span", { className: "state" }, swatch(color), label), el("div", { textContent: sub.detail }));
+    if (sub.state === "offset") {
+      result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" },
+        action(`api/subtitles/${sub.id}/fix`, undefined, "Поправи"), action(`api/subtitles/${sub.id}/dismiss`, undefined, "Остави така")));
+    } else if (sub.state === "fixed") {
+      result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" }, action(`api/subtitles/${sub.id}/restore`, undefined, "Върни оригинала")));
+    }
+    return el("tr", {},
+      el("td", { textContent: sub.label }),
+      el("td", { textContent: parts[parts.length - 1] }),
+      result,
+      el("td", { className: "time", textContent: fmtTime(sub.checked_at) }));
+  }));
+}
+
+const DOWNLOAD_STATES = {
+  found: ["Изтеглени", "moved"], more: ["Продължава", "pending"], nomatch: ["Не съвпадат", "review"],
+  failed: ["Грешка", "error"], none: ["Няма", "pending"],
+};
+
+function renderDownloads() {
+  const { counts, wanted, items } = data.downloads || { counts: {}, wanted: 0, items: [] };
+  const line = document.getElementById("downloads-run");
+  line.replaceChildren(`Без български субтитри или аудио: ${wanted}`);
+  for (const [state, [label]] of Object.entries(DOWNLOAD_STATES)) if (counts[state]) line.append(` · ${label.toLowerCase()}: ${counts[state]}`);
+  const tbody = document.getElementById("downloads");
+  if (!items.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "Още не е търсено." })));
+    return;
+  }
+  tbody.replaceChildren(...items.map(row => {
+    const parts = row.video.split("/");
+    const [label, color] = DOWNLOAD_STATES[row.state] || [row.state, "pending"];
+    return el("tr", {},
+      el("td", { textContent: row.label }),
+      el("td", { textContent: parts[parts.length - 1] }),
+      el("td", {}, el("span", { className: "state" }, swatch(color), label), el("div", { textContent: row.detail })),
+      el("td", { className: "time", textContent: fmtTime(row.checked_at) }));
+  }));
+}
+
+const AUDIO_DECISIONS = { bg: ["Български дублаж", "moved"], subs: ["Трябват субтитри", "review"] };
+
+function renderReview() {
+  const groups = data.review || [];
+  const open = groups.filter(g => !g.decision);
+  document.getElementById("review-run").replaceChildren(
+    `Видеа без български субтитри, чието аудио няма маркиран език. Без отговор: ${open.length} (${open.reduce((a, g) => a + g.videos, 0)} видеа)` +
+    ` · дублаж: ${groups.filter(g => g.decision === "bg").length} · субтитри: ${groups.filter(g => g.decision === "subs").length}`);
+  const tbody = document.getElementById("review");
+  if (!groups.length) {
+    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "Няма видеа за преглед." })));
+    return;
+  }
+  const answer = (g, decision, label) => action("api/audio", { folder: g.folder, decision }, label);
+  tbody.replaceChildren(...groups.map(g => {
+    const cell = el("td", {});
+    if (g.decision) {
+      const [label, color] = AUDIO_DECISIONS[g.decision];
+      cell.append(el("span", { className: "state" }, swatch(color), label),
+        el("div", { style: "display:flex;gap:8px;margin-top:6px" },
+          answer(g, g.decision === "bg" ? "subs" : "bg", g.decision === "bg" ? "Трябват субтитри" : "Български дублаж"),
+          answer(g, null, "Отмени")));
+    } else {
+      cell.append(el("div", { style: "display:flex;gap:8px" }, answer(g, "bg", "Български дублаж"), answer(g, "subs", "Трябват субтитри")));
+    }
+    return el("tr", {},
+      el("td", {}, el("div", { textContent: `${g.title} (${g.year})` }), el("div", { className: "target", textContent: g.library })),
+      el("td", { textContent: g.videos }),
+      el("td", {}, el("div", { textContent: g.audio }), el("div", { className: "target", textContent: g.sample })),
+      cell);
+  }));
+}
+
+async function refresh() {
+  const error = document.getElementById("error");
+  try {
+    data = await (await fetch("api/status")).json();
+    error.textContent = "";
+  } catch (e) {
+    error.textContent = `Няма връзка със сървъра: ${e}`;
+    return;
+  }
+  renderSubtitles();
+  renderDownloads();
+  if (!document.getElementById("review").contains(document.activeElement)) renderReview();
+}
+
+const LOG_KIND = {
+  error: ["Грешка", "error"], subtitles: ["Субтитри", "review"], checked: ["Субтитри", null], fixed: ["Поправени", "moved"],
+  dismissed: ["Оставени", null], restored: ["Върнат оригинал", null], converted: ["Превърнати", null], audio: ["Аудио", null],
+  remuxed: ["MKV", "moved"], bgsub: ["Изтеглени субтитри", "moved"], rejected: ["Отхвърлени субтитри", null],
+  none: ["Няма субтитри", null], nomatch: ["Субтитри не съвпадат", null], more: ["Субтитри", null],
+  bul: ["Аудио", null], und: ["Аудио", null],
+};
+
+liveLog({
+  kinds: LOG_KIND,
+  now(res) {
+    const sync = res.sync || {};
+    const now = document.getElementById("now");
+    now.className = sync.current ? "now" : "now idle";
+    now.replaceChildren(...(sync.current
+      ? [el("span", { className: "dot" }), sync.current, sync.queued > 1 ? ` · чакат: ${sync.queued - 1}` : ""]
+      : ["Всички субтитри са проверени; чака нови."]));
+    return Boolean(sync.current);
+  },
+  onLines() { refresh(); renderBar(); },
+});
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

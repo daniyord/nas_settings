@@ -47,7 +47,71 @@ services:
       - /volume5/MoviesAdult/Porn:/moviesadult/Porn
       - /volume6/MoviesAdult1/Porn:/moviesadult1/Porn
 
+  # Brings new movies and series into the film and series libraries, and finished qBittorrent downloads into them
+  media-ingest:
+    build:
+      context: .
+      dockerfile: media-ingest/Dockerfile
+    container_name: media-ingest
+    restart: unless-stopped
+    depends_on:
+      - jellyfin
+    ports:
+      - 8098:8098
+    environment:
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/media/.env}
+      LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
+      # Release folders (a season in the name, or downloaded through qBittorrent) are organized; the rest are left alone
+      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
+      # A finished torrent whose category is one of LIBRARIES or SERIES_LIBRARIES is moved into it; the category is kept
+      # pointed at whichever of DOWNLOAD_DIRS (qBittorrent's paths) has the most free space
+      QBIT_URL: http://host.docker.internal:8888
+      DOWNLOAD_DIRS: /downloads,/volume2/Movies2/Downloads,/volume3/Movies3/Downloads
+      QBIT_PATHS: /downloads=/volume1/Downloads,/volume2=/volume2,/volume3=/volume3
+      VOLUME_PATHS: /movies1=/volume1/Movies1,/movies2=/volume2/Movies2,/movies3=/volume3/Movies3
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - /volume1/ServerConfigurations/MediaIngest:/data
+      # Same paths as inside jellyfin, so item paths can be used as is; movies are renamed in place
+      - /volume1/Movies1:/movies1
+      - /volume2/Movies2:/movies2
+      - /volume3/Movies3:/movies3
+      - /volume5/MoviesAdult/Erotic:/moviesadult/Erotic
+      # Whole volumes, so a download folder and the library are one mount and a download moves with a rename
+      - /volume1:/volume1
+      - /volume2:/volume2
+      - /volume3:/volume3
+
+  # Checks and fixes the sync of the libraries' subtitles, downloads Bulgarian ones, asks about sound without a language
+  media-subtitles:
+    build:
+      context: .
+      dockerfile: media-subtitles/Dockerfile
+    container_name: media-subtitles
+    restart: unless-stopped
+    depends_on:
+      - jellyfin
+    ports:
+      - 8099:8099
+    environment:
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/media/.env}
+      LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
+      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
+    volumes:
+      - /volume1/ServerConfigurations/MediaSubtitles:/data
+      # Same paths as inside jellyfin, so item paths can be used as is
+      - /volume1/Movies1:/movies1
+      - /volume2/Movies2:/movies2
+      - /volume3/Movies3:/movies3
+      - /volume5/MoviesAdult/Erotic:/moviesadult/Erotic
+
+  # Replaced by media-ingest and media-subtitles (docs/PLAN_media_services.md); kept stopped until they have run for a
+  # few days, in the "old" profile so make up leaves it out. Its data stays in JellyfinMovieIngest.
   jellyfin-movie-ingest:
+    profiles: [old]
     build: ./jellyfin-movie-ingest
     container_name: jellyfin-movie-ingest
     restart: unless-stopped
@@ -83,8 +147,8 @@ services:
       - /volume3:/volume3
 
   # Was the UGOS App Center app (same image); its config moved to ServerConfigurations. Host network keeps
-  # the WebUI on :8888 for Prowlarr. No login from Docker's networks (AuthSubnetWhitelist), for jellyfin-movie-ingest.
-  # A download folder on every volume with a film library: jellyfin-movie-ingest picks the one with the most
+  # the WebUI on :8888 for Prowlarr. No login from Docker's networks (AuthSubnetWhitelist), for media-ingest.
+  # A download folder on every volume with a film library: media-ingest picks the one with the most
   # free space and moves finished downloads into the library on that disk.
   # PGID 10 (admin): UGOS grants the Downloads share to the admin group only, as it does dani_yord83 on the host
   qbittorrent:

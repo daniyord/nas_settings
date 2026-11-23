@@ -1,0 +1,37 @@
+# uv run pre-commit install  (once per clone); the tools and their versions come from uv.lock (pyproject.toml)
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --fix --force-exclude
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format --force-exclude
+        language: system
+        types: [python]
+      - id: basedpyright
+        name: basedpyright
+        entry: uv run --frozen basedpyright
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        # A shell script whose shebang (s6's with-contenv) isn't recognized as shell, so named here
+        files: ^docker/books/calibre-web/calibre-ingest$
+      - id: hadolint
+        name: hadolint
+        entry: uv run --frozen hadolint
+        language: system
+        files: (^|/)Dockerfile$
+      - id: compose-config
+        name: docker compose config
+        entry: docker compose --project-directory docker config -q
+        language: system
+        files: ^docker/.*\.ya?ml$
+        pass_filenames: false

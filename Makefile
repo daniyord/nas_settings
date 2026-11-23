@@ -6,7 +6,7 @@ ON_LAN := $(shell timeout 2 bash -c '</dev/tcp/$(NAS_LAN_IP)/22' 2>/dev/null && 
 export DOCKER_HOST := ssh://$(if $(ON_LAN),nas-lan,nas)
 COMPOSE := docker compose --project-directory docker
 
-.PHONY: up hard down
+.PHONY: up hard down lint test
 
 up:
 	$(COMPOSE) build
@@ -21,3 +21,10 @@ hard: up
 down:
 	@[ -n "$(ON_LAN)" ] || { echo "make down needs the NAS LAN ($(NAS_LAN_IP)); refusing over the tailnet" >&2; exit 1; }
 	$(COMPOSE) down
+
+# Same checks as the pre-commit hook, over every file (pyproject.toml, .pre-commit-config.yaml)
+lint:
+	uv run --frozen pre-commit run --all-files
+
+test:
+	uv run --frozen pytest

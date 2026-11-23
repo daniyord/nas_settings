@@ -42,6 +42,17 @@ A new group gets its own folder with a `docker-compose.yml` (and `.env` if it ne
 
 To download a film or a series, give the torrent in qBittorrent the category named after its library (`Филми`, `Филми - детски`, `Филми - български`, `Филми - руски`, `Сериали`, `Сериали - детски`, `Сериали - български`); Prowlarr already sets `Филми` or `Сериали`, so only the other ones are changed by hand while it downloads. Once it finishes, `jellyfin-movie-ingest` moves it into that library on the same disk (a rename) and drops the torrent, so nothing is seeded. Every torrent gets its own folder (Create subfolder), so a single episode becomes a release folder that is organized into its series; an episode of a series already in the library is moved, while it downloads, to the download folder on that series' disk.
 
+## Checks
+
+The services' Python, the Dockerfiles, the compose files and `calibre-ingest` are checked on every commit by a pre-commit hook (`.pre-commit-config.yaml`: `ruff`, `basedpyright`, `shellcheck`, `hadolint`, `docker compose config`); the tools come from `pyproject.toml`/`uv.lock` and run locally, nothing is installed on the NAS. Once per clone:
+
+```bash
+uv sync
+uv run pre-commit install
+```
+
+`make lint` runs the same checks over every file, `make test` the tests (`docker/*/*/tests/`). Findings in the code from before the checks are listed in `.basedpyright/baseline.json`, so only new ones are reported.
+
 ## Calibre-Web
 
 - First login is `admin` / `admin123` — change it right away. The database location is `/books`.

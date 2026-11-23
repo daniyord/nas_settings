@@ -1,0 +1,60 @@
+# Tooling for the services' Python (built into their own images from docker/); nothing here is installed on the NAS.
+# uv sync sets up .venv with the same libraries the Dockerfiles pin, so the linters and tests see them.
+[project]
+name = "nas-settings"
+version = "0"
+requires-python = ">=3.13,<3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "basedpyright",
+    "pre-commit",
+    "pytest",
+    "ruff",
+    # As in the Dockerfiles
+    "fastapi==0.115.12",
+    "ffsubsync==0.5.1",
+    "pillow==12.3.0",
+    "uvicorn==0.34.2",
+    "hadolint-py>=2.15.1.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+# Real mistakes only for now; style rules come in file by file as the code is split (docs/PLAN_media_services.md)
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Single-letter names and re-raised HTTP errors in the code from before the linters; dropped as it is rewritten
+"docker/media/jellyfin-movie-ingest/*.py" = ["E741", "B904"]
+"docker/media/jellyfin-tpdb-match/*.py" = ["E741", "B904"]
+
+[tool.ruff.format]
+# Not formatted yet; each is dropped from here when it is rewritten
+exclude = [
+    "docker/media/jellyfin-movie-ingest/*.py",
+    "docker/media/jellyfin-tpdb-match/*.py",
+]
+
+[tool.basedpyright]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+# Each service imports its own modules from its folder, as /app in its image
+executionEnvironments = [
+    { root = "docker/media/jellyfin-movie-ingest" },
+    { root = "docker/media/jellyfin-tpdb-match" },
+]
+exclude = [".venv"]
+# What it found in the code from before (untyped JSON read as possibly None); only new findings are reported
+baselineFile = ".basedpyright/baseline.json"
+
+[tool.pytest.ini_options]
+testpaths = ["docker"]
+addopts = ["--import-mode=importlib"]

@@ -4,3 +4,8 @@ __pycache__
 
 # Compose secrets: docker/.env (TS_AUTHKEY) and one .env per service group (docker/<group>/.env)
 docker/**/.env
+
+# uv sync (pyproject.toml)
+.venv/
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,5 @@
+# Debian and Alpine drop old package versions from their repositories, so pinned ones would break the next build
+ignored:
+  - DL3008
+  - DL3018
+failure-threshold: warning

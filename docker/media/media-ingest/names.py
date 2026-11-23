@@ -126,6 +126,15 @@ def is_xml(path):
         return False
 
 
+def locked(path):
+    """Whether an NFO file says its metadata is locked (Jellyfin's Lock this item)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return "<lockdata>true</lockdata>" in f.read()
+    except OSError:
+        return False
+
+
 def foreign_rest(name):
     """The language and extension of a subtitle named after something else ("Some.Release.eng.srt" -> ".en.srt")."""
     ext = os.path.splitext(name)[1].lower()

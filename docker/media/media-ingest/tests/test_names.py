@@ -127,3 +127,12 @@ def test_generic_name(rest, name):
 def test_norm_compares_titles_without_case_punctuation_or_ampersands():
     assert names.norm("Fast & Furious: 7") == names.norm("fast and furious 7") == "fastandfurious7"
     assert names.norm("Мисия: Невъзможна") == "мисияневъзможна"
+
+
+def test_locked_reads_lockdata_from_nfo(tmp_path):
+    nfo = tmp_path / "movie.nfo"
+    nfo.write_text("<movie>\n  <lockdata>true</lockdata>\n</movie>")
+    assert names.locked(nfo)
+    nfo.write_text("<movie>\n  <lockdata>false</lockdata>\n</movie>")
+    assert not names.locked(nfo)
+    assert not names.locked(tmp_path / "missing.nfo")

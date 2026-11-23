@@ -9,7 +9,7 @@ import time
 from common.jellyfin import jellyfin
 from common.media import ORGANIZED, SETTLE_AFTER, SUBTITLE, VIDEO_EXTS, Conflict, with_language
 from config import ORGANIZE_AFTER
-from names import bg_sort, doubt, foreign_rest, generic_name, id_tag, is_xml, owner, padded, target_name
+from names import bg_sort, doubt, foreign_rest, generic_name, id_tag, is_xml, locked, owner, padded, target_name
 from state import db, event, lock, log, missing_since, ready_since, record, status, step
 
 
@@ -139,6 +139,11 @@ def check(item, library, location, admin):
     if time.time() < settles:
         record(item, library["Name"], name, "pending", "файлът още се копира")
         return settles
+    if not identified and any(locked(os.path.join(folder, n)) for n in ("movie.nfo", stem + ".nfo")):
+        # Entered and locked by hand: a movie TMDB doesn't know stays where it is
+        with lock:
+            status.pop(item["Id"], None)
+        return float("inf")
     if not identified:
         detail = "Jellyfin не е разпознал филма (или няма година): Identify в Jellyfin"
         record(item, library["Name"], name, "unidentified", detail)

@@ -85,3 +85,9 @@ td .target { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
 .log li { white-space: pre-wrap; word-break: break-word; color: var(--ink-2); }
 .log .time { color: var(--muted); }
 .log .kind { font-weight: 600; }
+
+.log.short { max-height: 130px; }
+details.card > summary { cursor: pointer; }
+details.card > summary h2 { display: inline; margin: 0; }
+details.card[open] > summary { margin-bottom: 12px; }
+.card h3 { font-size: 14px; margin: 18px 0 8px; }

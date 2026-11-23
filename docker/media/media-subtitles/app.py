@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import time
+import urllib.error
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -14,15 +15,18 @@ import audio
 from common.media import Conflict
 from common.web import add_page
 from config import INTERVAL, PORT
-from download import download_step
+from download import download_step, wanted_subtitles
 from state import (
     activity,
     db,
     downloads_run,
     event,
+    item_ids,
+    known_items,
     lock,
     log,
     read_locations,
+    search_first,
     refresh_video,
     subtitle_label,
     sync_run,
@@ -48,6 +52,9 @@ def subtitle_loop():
             auto_fix()
             todo = pending_subtitles()
             sync_run["queued"] = len(todo)
+            # What the user asked for doesn't wait for the checks
+            if search_first and download_step(asked_only=True):
+                continue
             if todo:
                 check_subtitle(*todo[0])
                 continue
@@ -74,16 +81,28 @@ add_page(app, os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.ht
 
 @app.get("/api/status")
 def api_status():
+    try:
+        ids = known_items()
+    except (urllib.error.URLError, TimeoutError):
+        ids = item_ids["ids"]
     with lock:
         subtitles = [
-            {**dict(r), "label": subtitle_label(r["path"])}
+            {
+                **dict(r),
+                "label": subtitle_label(r["path"]),
+                "item": ids.get(r["video"]),
+                "searching": r["video"] in search_first,
+            }
             for r in db.execute(
-                "SELECT id, path, checked_at, state, offset, scale, detail FROM subtitles WHERE state != 'ok' ORDER BY checked_at DESC"
+                "SELECT s.id, s.path, s.video, s.checked_at, s.state, s.offset, s.scale, s.detail,"
+                " d.state AS search_state, d.detail AS search_detail, d.checked_at AS searched_at"
+                " FROM subtitles s LEFT JOIN downloads d ON d.video = s.video WHERE s.state != 'ok'"
+                " ORDER BY s.checked_at DESC"
             )
         ]
         counts = dict(db.execute("SELECT state, COUNT(*) FROM subtitles GROUP BY state").fetchall())
         downloads = [
-            {**dict(r), "label": subtitle_label(r["video"])}
+            {**dict(r), "label": subtitle_label(r["video"]), "item": ids.get(r["video"])}
             for r in db.execute(
                 "SELECT video, state, checked_at, detail FROM downloads WHERE state != 'none' ORDER BY checked_at DESC LIMIT 200"
             )
@@ -104,11 +123,11 @@ def api_activity(after: int = 0):
     return {"sync": sync_run, "lines": activity.since(after), "boot": activity.boot}
 
 
-def subtitle_row(sub_id, state):
+def subtitle_row(sub_id, *states):
     row = db.execute("SELECT * FROM subtitles WHERE id = ?", (sub_id,)).fetchone()
     if not row:
         raise HTTPException(404, "unknown subtitle")
-    if row["state"] != state:
+    if row["state"] not in states:
         raise HTTPException(409, f"subtitle is {row['state']}")
     return row
 
@@ -128,13 +147,40 @@ def fix_subtitle(sub_id: int):
 @app.post("/api/subtitles/{sub_id}/dismiss")
 def dismiss_subtitle(sub_id: int):
     with lock:
-        row = subtitle_row(sub_id, "offset")
+        # A failed check too, when the user finds the subtitle fine
+        row = subtitle_row(sub_id, "offset", "failed")
         db.execute("UPDATE subtitles SET state = 'dismissed' WHERE id = ?", (sub_id,))
         if os.path.exists(synced_path(row["path"])):
             os.remove(synced_path(row["path"]))
         event(
             row["path"], "dismissed", f"{os.path.basename(row['path'])}: {row['detail']}", subtitle_label(row["path"])
         )
+    # Off the lists of videos wanting subtitles and of sound to ask about
+    downloads_run["listed_at"] = 0
+    return {"ok": True}
+
+
+@app.post("/api/subtitles/{sub_id}/search")
+def search_other(sub_id: int):
+    with lock:
+        row = subtitle_row(sub_id, "offset")
+    video = row["video"]
+    if not downloads_run["listed_at"]:
+        downloads_run["wanted"], downloads_run["review"] = wanted_subtitles()
+        downloads_run["listed_at"] = time.time()
+    group = next((g for f, g in downloads_run["review"].items() if video.startswith(f + "/")), None)
+    if group and group["decision"] == "bg":
+        raise HTTPException(409, "аудиото е отбелязано като български дублаж: смени отговора, ако трябват субтитри")
+    if group and not group["decision"]:
+        # Asking for other subtitles says the sound without a language isn't a Bulgarian dub
+        audio.answer(group["folder"], "subs", group)
+        downloads_run["listed_at"] = 0
+    elif not group and not any(w["video"] == video for w in downloads_run["wanted"]):
+        raise HTTPException(409, "видеото не е в списъка за теглене (има вградени български субтитри или аудио)")
+    if video not in search_first:
+        search_first.append(video)
+        event(row["path"], "search", f"{os.path.basename(row['path'])}: търси други", subtitle_label(row["path"]))
+    wake.set()
     return {"ok": True}
 
 

@@ -59,6 +59,8 @@ wake = threading.Event()
 sync_run = {"current": None, "queued": 0}
 # The videos that want Bulgarian subtitles, from Jellyfin every WANTED_REFRESH; the site searches by IMDb id
 downloads_run = {"wanted": [], "review": {}, "listed_at": 0.0, "paused_until": 0.0}
+# Videos the user asked other subtitles for: searched before the rest, even before their retry time
+search_first = []
 searches = {}
 # Jellyfin's item id of every movie and episode path, for refresh_video
 item_ids = {"at": 0.0, "ids": {}}
@@ -82,18 +84,23 @@ def subtitle_label(path):
     return os.path.relpath(folder, location) if location else os.path.basename(folder)
 
 
+def known_items(reload=False):
+    """Jellyfin's item id of every movie and episode path; listing every item takes seconds, so at most every 10 min
+    unless asked for."""
+    if reload or time.time() - item_ids["at"] > 600:
+        items = jellyfin("/Items", Recursive="true", IncludeItemTypes="Movie,Episode", Fields="Path", Limit=100000)[
+            "Items"
+        ]
+        item_ids.update(at=time.time(), ids={i["Path"]: i["Id"] for i in items if i.get("Path")})
+    return item_ids["ids"]
+
+
 def refresh_video(video, label):
     # Jellyfin keeps an external subtitle's stream from the last scan and doesn't notice a rewrite or a new file
     try:
-        # Listing every item takes seconds, and fixes and downloads come in runs
-        if video not in item_ids["ids"] or time.time() - item_ids["at"] > 600:
-            items = jellyfin("/Items", Recursive="true", IncludeItemTypes="Movie,Episode", Fields="Path", Limit=100000)[
-                "Items"
-            ]
-            item_ids.update(at=time.time(), ids={i["Path"]: i["Id"] for i in items if i.get("Path")})
-        if video in item_ids["ids"]:
-            item = item_ids["ids"][video]
-            jellyfin(f"/Items/{item}/Refresh", "POST", MetadataRefreshMode="Default", ImageRefreshMode="Default")
+        ids = known_items(reload=video not in item_ids["ids"])
+        if video in ids:
+            jellyfin(f"/Items/{ids[video]}/Refresh", "POST", MetadataRefreshMode="Default", ImageRefreshMode="Default")
         else:
             log(f"error {label}: no Jellyfin item for {os.path.basename(video)}, refresh it by hand")
     except (urllib.error.URLError, TimeoutError) as e:

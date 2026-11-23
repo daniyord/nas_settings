@@ -27,7 +27,7 @@ from config import (
     SYNC_EXTS,
     WANTED_REFRESH,
 )
-from state import db, downloads_run, event, lock, log, refresh_video, searches, subtitle_label, sync_run
+from state import db, downloads_run, event, lock, log, refresh_video, search_first, searches, subtitle_label, sync_run
 from sync import align, safe_to_fix
 
 
@@ -57,6 +57,8 @@ def note_review(review, folder, library, match, decision, video, item):
         {
             "folder": folder,
             "library": library,
+            # The series' page for an episode
+            "item": item.get("SeriesId") or item["Id"],
             "title": match.group(1),
             "year": int(match.group(2)),
             "decision": decision,
@@ -303,21 +305,35 @@ def download_subtitle(w, tried):
     )
 
 
-def download_step():
-    """Looks for Bulgarian subtitles for the next video that needs them; returns whether there was one."""
+def download_step(asked_only=False):
+    """Looks for Bulgarian subtitles for the next video that needs them, the ones the user asked about first (only
+    those with asked_only); returns whether there was one."""
     if time.time() < downloads_run["paused_until"]:
         return False
-    if time.time() - downloads_run["listed_at"] > WANTED_REFRESH:
+    stale = time.time() - downloads_run["listed_at"] > WANTED_REFRESH
+    # A listing made while the user answered may predate the answer that put an asked video on it
+    if stale or any(v not in {w["video"] for w in downloads_run["wanted"]} for v in search_first):
         downloads_run["wanted"], downloads_run["review"] = wanted_subtitles()
         downloads_run["listed_at"] = time.time()
+    wanted = {w["video"] for w in downloads_run["wanted"]}
+    for video in [v for v in search_first if v not in wanted]:
+        search_first.remove(video)
+        log(f"error {subtitle_label(video)}: {os.path.basename(video)} no longer wants subtitles, not searched")
     with lock:
         rows = {r["video"]: r for r in db.execute("SELECT * FROM downloads")}
     retry = {"none": RETRY_NONE, "nomatch": RETRY_NOMATCH, "found": RETRY_NOMATCH}
-    for w in downloads_run["wanted"]:
+    for w in sorted(downloads_run["wanted"], key=lambda w: w["video"] not in search_first):
         row = rows.get(w["video"])
-        if row and (
-            row["checked_at"] > downloads_run["listed_at"]
-            or time.time() - row["checked_at"] < retry.get(row["state"], 0)
+        asked = w["video"] in search_first
+        if asked_only and not asked:
+            return False
+        if (
+            not asked
+            and row
+            and (
+                row["checked_at"] > downloads_run["listed_at"]
+                or time.time() - row["checked_at"] < retry.get(row["state"], 0)
+            )
         ):
             continue
         label = subtitle_label(w["video"])
@@ -333,6 +349,9 @@ def download_step():
             state, detail, target = "failed", str(e), None
             log(f"error {label}: {e}")
         record_download(w["video"], state, tried, detail, target)
+        # "more" goes on with the rest of the listings on the next step
+        if asked and state != "more":
+            search_first.remove(w["video"])
         if state != "found":
             log(f"{state} {label}: {os.path.basename(w['video'])}: {detail}")
         return True

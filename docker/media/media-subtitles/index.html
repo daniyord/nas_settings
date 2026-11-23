@@ -13,13 +13,7 @@
   <p class="sub" id="error" style="margin-bottom:20px"></p>
 
   <section class="card">
-    <h2>В момента</h2>
-    <p class="now idle" id="now"></p>
-    <ol class="log" id="log"><li class="empty">Още няма събития от последния старт на услугата.</li></ol>
-  </section>
-
-  <section class="card">
-    <h2>Субтитри</h2>
+    <h2>Субтитри, които се разминават</h2>
     <p class="sub" id="sync-run" style="margin-bottom:12px"></p>
     <div class="table-wrap">
       <table>
@@ -41,7 +35,28 @@
   </section>
 
   <section class="card">
-    <h2>Български субтитри от сайтовете</h2>
+    <h2>В момента</h2>
+    <p class="now idle" id="now"></p>
+    <ol class="log short" id="log"><li class="empty">Още няма събития от последния старт на услугата.</li></ol>
+  </section>
+
+  <details class="card">
+    <summary><h2>История</h2> <span class="sub" id="history-run"></span></summary>
+    <h3>Проверени субтитри</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Филм / сериал</th><th>Субтитри</th><th>Резултат</th><th>Проверено</th></tr></thead>
+        <tbody id="subtitles-history"></tbody>
+      </table>
+    </div>
+    <h3>Аудио с отговор</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Филм / сериал</th><th>Видеа</th><th>Аудио</th><th>Отговор</th></tr></thead>
+        <tbody id="review-history"></tbody>
+      </table>
+    </div>
+    <h3>Български субтитри от сайтовете</h3>
     <p class="sub" id="downloads-run" style="margin-bottom:12px"></p>
     <div class="table-wrap">
       <table>
@@ -49,17 +64,24 @@
         <tbody id="downloads"></tbody>
       </table>
     </div>
-  </section>
+  </details>
 </main>
 
 <script src="common/page.js"></script>
 <script>
 let data = {};
+const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
+const linked = (text, id) => id ? el("a", { href: jellyfinLink(id), target: "_blank", rel: "noopener", textContent: text }) : text;
 
 const SUB_STATES = {
   offset: ["Разминават се", "review"], failed: ["Неуспешна проверка", "unidentified"],
   fixed: ["Поправени", "moved"], dismissed: ["Оставени", "pending"], restored: ["Върнат оригинал", "pending"],
 };
+
+function fill(id, rows, empty, cols = 4) {
+  document.getElementById(id).replaceChildren(...(rows.length ? rows
+    : [el("tr", {}, el("td", { colSpan: cols, className: "empty", textContent: empty }))]));
+}
 
 function action(url, body, label) {
   const button = el("button", { type: "button", textContent: label });
@@ -78,36 +100,43 @@ function action(url, body, label) {
   return button;
 }
 
+function subtitleRow(sub) {
+  const parts = sub.path.split("/");
+  const [label, color] = SUB_STATES[sub.state] || [sub.state, "pending"];
+  const result = el("td", {}, el("span", { className: "state" }, swatch(color), label), el("div", { textContent: sub.detail }));
+  if (sub.state === "offset") {
+    result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" },
+      action(`api/subtitles/${sub.id}/fix`, undefined, "Поправи"), action(`api/subtitles/${sub.id}/dismiss`, undefined, "Остави така"),
+      sub.searching ? el("span", { className: "target", textContent: "търси други…" })
+        : action(`api/subtitles/${sub.id}/search`, undefined, "Изтегли други")));
+    if (sub.search_state) {
+      const [label] = DOWNLOAD_STATES[sub.search_state] || [sub.search_state];
+      result.append(el("div", { className: "target", textContent: `Последно търсене (${fmtTime(sub.searched_at)}): ${label.toLowerCase()} · ${sub.search_detail}` }));
+    }
+  } else if (sub.state === "failed") {
+    result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" },
+      action(`api/subtitles/${sub.id}/dismiss`, undefined, "Наред са")));
+  } else if (sub.state === "fixed") {
+    result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" }, action(`api/subtitles/${sub.id}/restore`, undefined, "Върни оригинала")));
+  }
+  return el("tr", {},
+    el("td", {}, linked(sub.label, sub.item)),
+    el("td", { textContent: parts[parts.length - 1] }),
+    result,
+    el("td", { className: "time", textContent: fmtTime(sub.checked_at) }));
+}
+
 function renderSubtitles() {
   const { run, counts, items } = data.subtitles || { run: {}, counts: {}, items: [] };
   const line = document.getElementById("sync-run");
   const checked = Object.values(counts).reduce((a, b) => a + b, 0);
-  line.replaceChildren(`Проверени: ${checked} (наред: ${counts.ok || 0})`);
+  line.replaceChildren(`Проверени: ${checked} (наред: ${counts.ok || 0}, поправени: ${counts.fixed || 0})`);
   if (run.queued) line.append(` · чакат: ${run.queued}`);
   if (run.current) line.append(` · сега: ${run.current}`);
   const order = Object.keys(SUB_STATES);
   const rows = [...items].sort((a, b) => order.indexOf(a.state) - order.indexOf(b.state) || b.checked_at - a.checked_at);
-  const tbody = document.getElementById("subtitles");
-  if (!rows.length) {
-    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "Няма субтитри с разминаване." })));
-    return;
-  }
-  tbody.replaceChildren(...rows.map(sub => {
-    const parts = sub.path.split("/");
-    const [label, color] = SUB_STATES[sub.state] || [sub.state, "pending"];
-    const result = el("td", {}, el("span", { className: "state" }, swatch(color), label), el("div", { textContent: sub.detail }));
-    if (sub.state === "offset") {
-      result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" },
-        action(`api/subtitles/${sub.id}/fix`, undefined, "Поправи"), action(`api/subtitles/${sub.id}/dismiss`, undefined, "Остави така")));
-    } else if (sub.state === "fixed") {
-      result.append(el("div", { style: "display:flex;gap:8px;margin-top:6px" }, action(`api/subtitles/${sub.id}/restore`, undefined, "Върни оригинала")));
-    }
-    return el("tr", {},
-      el("td", { textContent: sub.label }),
-      el("td", { textContent: parts[parts.length - 1] }),
-      result,
-      el("td", { className: "time", textContent: fmtTime(sub.checked_at) }));
-  }));
+  fill("subtitles", rows.filter(s => s.state === "offset").map(subtitleRow), "Няма субтитри, които чакат решение.");
+  fill("subtitles-history", rows.filter(s => s.state !== "offset").map(subtitleRow), "Още няма.");
 }
 
 const DOWNLOAD_STATES = {
@@ -120,20 +149,15 @@ function renderDownloads() {
   const line = document.getElementById("downloads-run");
   line.replaceChildren(`Без български субтитри или аудио: ${wanted}`);
   for (const [state, [label]] of Object.entries(DOWNLOAD_STATES)) if (counts[state]) line.append(` · ${label.toLowerCase()}: ${counts[state]}`);
-  const tbody = document.getElementById("downloads");
-  if (!items.length) {
-    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "Още не е търсено." })));
-    return;
-  }
-  tbody.replaceChildren(...items.map(row => {
+  fill("downloads", items.map(row => {
     const parts = row.video.split("/");
     const [label, color] = DOWNLOAD_STATES[row.state] || [row.state, "pending"];
     return el("tr", {},
-      el("td", { textContent: row.label }),
+      el("td", {}, linked(row.label, row.item)),
       el("td", { textContent: parts[parts.length - 1] }),
       el("td", {}, el("span", { className: "state" }, swatch(color), label), el("div", { textContent: row.detail })),
       el("td", { className: "time", textContent: fmtTime(row.checked_at) }));
-  }));
+  }), "Още не е търсено.");
 }
 
 const AUDIO_DECISIONS = { bg: ["Български дублаж", "moved"], subs: ["Трябват субтитри", "review"] };
@@ -144,13 +168,8 @@ function renderReview() {
   document.getElementById("review-run").replaceChildren(
     `Видеа без български субтитри, чието аудио няма маркиран език. Без отговор: ${open.length} (${open.reduce((a, g) => a + g.videos, 0)} видеа)` +
     ` · дублаж: ${groups.filter(g => g.decision === "bg").length} · субтитри: ${groups.filter(g => g.decision === "subs").length}`);
-  const tbody = document.getElementById("review");
-  if (!groups.length) {
-    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 4, className: "empty", textContent: "Няма видеа за преглед." })));
-    return;
-  }
   const answer = (g, decision, label) => action("api/audio", { folder: g.folder, decision }, label);
-  tbody.replaceChildren(...groups.map(g => {
+  const row = g => {
     const cell = el("td", {});
     if (g.decision) {
       const [label, color] = AUDIO_DECISIONS[g.decision];
@@ -162,11 +181,19 @@ function renderReview() {
       cell.append(el("div", { style: "display:flex;gap:8px" }, answer(g, "bg", "Български дублаж"), answer(g, "subs", "Трябват субтитри")));
     }
     return el("tr", {},
-      el("td", {}, el("div", { textContent: `${g.title} (${g.year})` }), el("div", { className: "target", textContent: g.library })),
+      el("td", {}, el("div", {}, linked(`${g.title} (${g.year})`, g.item)), el("div", { className: "target", textContent: g.library })),
       el("td", { textContent: g.videos }),
       el("td", {}, el("div", { textContent: g.audio }), el("div", { className: "target", textContent: g.sample })),
       cell);
-  }));
+  };
+  fill("review", open.map(row), "Няма видеа, които чакат отговор.");
+  fill("review-history", groups.filter(g => g.decision).map(row), "Още няма отговори.");
+}
+
+function renderHistory() {
+  const sub = (data.subtitles || {}).items || [], dl = (data.downloads || {}).items || [];
+  document.getElementById("history-run").textContent =
+    `${sub.filter(s => s.state !== "offset").length} субтитри · ${(data.review || []).filter(g => g.decision).length} отговора · ${dl.length} търсения`;
 }
 
 async function refresh() {
@@ -180,12 +207,14 @@ async function refresh() {
   }
   renderSubtitles();
   renderDownloads();
-  if (!document.getElementById("review").contains(document.activeElement)) renderReview();
+  const focus = document.activeElement;
+  if (!["review", "review-history"].some(id => document.getElementById(id).contains(focus))) renderReview();
+  renderHistory();
 }
 
 const LOG_KIND = {
   error: ["Грешка", "error"], subtitles: ["Субтитри", "review"], checked: ["Субтитри", null], fixed: ["Поправени", "moved"],
-  dismissed: ["Оставени", null], restored: ["Върнат оригинал", null], converted: ["Превърнати", null], audio: ["Аудио", null],
+  dismissed: ["Оставени", null], search: ["Търси други", null], restored: ["Върнат оригинал", null], converted: ["Превърнати", null], audio: ["Аудио", null],
   remuxed: ["MKV", "moved"], bgsub: ["Изтеглени субтитри", "moved"], rejected: ["Отхвърлени субтитри", null],
   none: ["Няма субтитри", null], nomatch: ["Субтитри не съвпадат", null], more: ["Субтитри", null],
   bul: ["Аудио", null], und: ["Аудио", null],

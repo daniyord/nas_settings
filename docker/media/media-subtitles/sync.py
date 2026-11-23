@@ -156,32 +156,53 @@ def auto_fix():
     return bool(rows)
 
 
-def align(video, subtitle, out):
-    """(state, offset, scale, detail) of a subtitle against the speech in the video, its aligned copy in out:
-    state is ok, offset (out holds the fix) or failed."""
-    result, error = None, None
+def run_check(video, subtitle, out, vad):
+    """ffsubsync's (offset, scale) with the given voice detector, or (None, why it found none)."""
     checker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sync_check.py")
     try:
         # Its own process at the lowest priority, so a check never holds up playback or transcoding
         proc = subprocess.run(
-            ["nice", "-n", "19", sys.executable, checker, video, subtitle, out],
+            ["nice", "-n", "19", sys.executable, checker, video, subtitle, out, vad],
             capture_output=True,
             text=True,
             timeout=SYNC_TIMEOUT,
         )
-        line = next((x for x in reversed(proc.stdout.splitlines()) if x.startswith("RESULT ")), None)
-        if line:
-            result = json.loads(line[len("RESULT ") :])
-        else:
-            lines = (proc.stderr + proc.stdout).splitlines()
-            error = next((x.strip() for x in reversed(lines) if x.strip()), f"exit code {proc.returncode}")
     except subprocess.TimeoutExpired:
-        error = f"не приключи за {SYNC_TIMEOUT // 60} мин"
-    if result and result["sync_was_successful"]:
-        offset, scale = result["offset_seconds"], result["framerate_scale_factor"]
-        state = "offset" if abs(offset) >= MIN_OFFSET or abs(scale - 1) > 0.001 else "ok"
-        return state, offset, scale, describe(offset, scale)
-    return "failed", None, None, error or "ffsubsync не намери съвпадение с говора"
+        return None, f"не приключи за {SYNC_TIMEOUT // 60} мин"
+    line = next((x for x in reversed(proc.stdout.splitlines()) if x.startswith("RESULT ")), None)
+    if not line:
+        lines = (proc.stderr + proc.stdout).splitlines()
+        return None, next((x.strip() for x in reversed(lines) if x.strip()), f"exit code {proc.returncode}")
+    result = json.loads(line[len("RESULT ") :])
+    if not result["sync_was_successful"]:
+        return None, "ffsubsync не намери съвпадение с говора"
+    return (result["offset_seconds"], result["framerate_scale_factor"]), None
+
+
+def in_sync(offset, scale):
+    return abs(offset) < MIN_OFFSET and abs(scale - 1) <= 0.001
+
+
+def align(video, subtitle, out):
+    """(state, offset, scale, detail) of a subtitle against the speech in the video, its aligned copy in out:
+    state is ok, offset (out holds the fix) or failed.
+
+    webrtc, ffsubsync's default voice detector, decides. auditok finds speech in some AVIs webrtc hears none in
+    (Band of Brothers S01E07), but the shifts it finds are mostly wrong (Continuum S02E09), so it only tells a subtitle
+    that is in sync."""
+    first, error = run_check(video, subtitle, out, "webrtc")
+    if first:
+        return ("ok" if in_sync(*first) else "offset"), *first, describe(*first)
+    # ffsubsync writes the format the extension names
+    base, ext = os.path.splitext(out)
+    second, _ = run_check(video, subtitle, base + ".auditok" + ext, "auditok")
+    if os.path.exists(base + ".auditok" + ext):
+        os.remove(base + ".auditok" + ext)
+    if second and in_sync(*second):
+        return "ok", *second, describe(*second) + " (по auditok; webrtc не намери говор)"
+    if second:
+        return "failed", None, None, f"само auditok намери говор, а изместването му е ненадеждно ({describe(*second)})"
+    return "failed", None, None, error
 
 
 def check_subtitle(subtitle, video):

@@ -34,3 +34,21 @@ def test_convert_microdvd_uses_the_frame_rate_in_its_header(tmp_path, monkeypatc
     assert "25" not in srt.split("\n\n")[0].splitlines()[-1]
     assert (tmp_path / "Movie (2000) [imdbid-tt1].sub.orig").exists()
     assert not sub.exists()
+
+
+@pytest.mark.parametrize(
+    ("webrtc", "auditok", "state"),
+    [
+        ((0.2, 1), None, "ok"),
+        ((8.4, 1), (-52, 1), "offset"),
+        ((42.85, 1.001), None, "offset"),
+        # auditok, only when webrtc hears no speech, and only to tell a subtitle in sync
+        (None, (-0.48, 1), "ok"),
+        (None, (59.86, 25 / 23.976), "failed"),
+        (None, None, "failed"),
+    ],
+)
+def test_align_trusts_auditok_only_when_webrtc_hears_nothing(monkeypatch, tmp_path, webrtc, auditok, state):
+    found = {"webrtc": webrtc, "auditok": auditok}
+    monkeypatch.setattr(sync, "run_check", lambda video, subtitle, out, vad: (found[vad], "no speech"))
+    assert sync.align("v.mkv", "s.srt", str(tmp_path / "s.srt"))[0] == state

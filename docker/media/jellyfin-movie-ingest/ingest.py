@@ -1236,8 +1236,8 @@ def note_review(review, folder, library, match, decision, video, item):
 
 
 def wanted_subtitles():
-    """Every organized movie and episode without Bulgarian sound or a good Bulgarian subtitle, newest first, and per
-    folder the ones whose sound names no language, for the user to say whether that is a Bulgarian dub. A Bulgarian
+    """Every organized movie and episode with sound other than Bulgarian and no good Bulgarian subtitle, newest first,
+    and per folder the ones whose one sound track names no language, for the user to say whether that is a Bulgarian dub. A Bulgarian
     subtitle that failed its check or is too far off to fix on its own is in "replace"."""
     with lock:
         bad = {r["path"] for r in db.execute("SELECT path, state, offset, scale FROM subtitles WHERE state IN ('failed', 'offset')")
@@ -1262,20 +1262,21 @@ def wanted_subtitles():
             folder = os.path.join(location.rstrip("/"), top)
             streams = item.get("MediaStreams") or []
             audio = [s for s in streams if s["Type"] == "Audio"]
-            untagged = any((s.get("Language") or "und").lower() == "und" for s in audio)
+            # One sound track without a language is often a Bulgarian dub, kids' films most of all: the user says which.
+            # Next to a Bulgarian track another one is the original, which is watched with subtitles
+            single = len(audio) == 1 and (audio[0].get("Language") or "und").lower() == "und" and not bulgarian_stream(audio[0])
             if folder in decisions:
                 note_review(review, folder, name, m, decisions[folder], video, item)
-            if decisions.get(folder) == "bg":
+            if single and (decisions.get(folder) == "bg" or re.search(r"bg[ ._-]?audio", video, re.I)):
                 continue
-            if re.search(r"bg[ ._-]?audio", video, re.I) or any(bulgarian_stream(s) for s in audio):
+            if audio and all(bulgarian_stream(s) for s in audio):
                 continue
             if any(s["Type"] == "Subtitle" and not s.get("IsExternal") and bulgarian_stream(s) for s in streams):
                 continue
             files = bulgarian_files(video)
             if files and not set(files) <= bad:
                 continue
-            # Sound without a language is often a Bulgarian dub, kids' films most of all: the user says which
-            if untagged and folder not in decisions:
+            if single and folder not in decisions:
                 note_review(review, folder, name, m, None, video, item)
                 continue
             fps = next((s.get("RealFrameRate") or s.get("AverageFrameRate") for s in streams if s["Type"] == "Video"), None)

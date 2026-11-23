@@ -6,8 +6,9 @@
 # file's name waits for a confirmation on the status page on PORT. A series in a release folder (one with
 # a season in its name, or any series folder that came from qBittorrent) is organized the same way into <Title> (<Year>) [imdbid-tt...]/Season NN/SxxEyy - <Title>,
 # or added to the series' folder when there is one, once every episode's SxxEyy matches Jellyfin's. Separately, the text subtitles of every
-# organized movie are aligned to the speech in the video (ffsubsync); an offset or a frame rate mismatch is
-# only reported, and fixed from the status page, keeping the original as <subtitle>.orig. The history of
+# organized movie are aligned to the speech in the video (ffsubsync); a shift of up to MAX_AUTO_OFFSET, alone or with
+# a usual frame rate conversion, is fixed right away, anything else is fixed from the status page, keeping the
+# original as <subtitle>.orig either way. The history of
 # every action, the confirmations and the subtitle checks live in a SQLite database in DATA_DIR. A finished
 # torrent in a qBittorrent category named after a library is moved into that library's folder on the same
 # disk (a rename, never a copy) and dropped from qBittorrent, which is where the steps above take over.
@@ -32,6 +33,8 @@ import urllib.parse
 import urllib.request
 
 import pysubs2
+
+import bg_subtitles
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -85,8 +88,19 @@ SYNC_EXTS = {".srt", ".ass", ".ssa"}
 MICRODVD = re.compile(rb"\s*\{\d+\}\{\d*\}")
 # Less than this is within what ffsubsync gets wrong itself and nobody notices
 MIN_OFFSET = 0.5
+# An alignment within these is applied without waiting on the status page (safe_to_fix)
+MAX_AUTO_OFFSET = 20
+SAFE_SCALES = {a / b for a in (23.976, 24, 25) for b in (23.976, 24, 25)}
 SYNC_TIMEOUT = 1800
 SYNCED_DIR = os.path.join(DATA_DIR, "synced")
+# Downloaded listings, kept so the episodes of one season pack don't fetch it again
+SUBTITLE_CACHE = os.path.join(DATA_DIR, "subtitle-cache")
+# Subtitles aligned with ffsubsync for one video in one go; the rest wait for the next pass over the library
+MAX_TRIES = 4
+WANTED_REFRESH = 3600
+SEARCH_TTL = 3600
+RETRY_NONE = 7 * 86400
+RETRY_NOMATCH = 30 * 86400
 
 # In memory only: rebuilt from Jellyfin on every run
 status = {}
@@ -106,6 +120,13 @@ failed_downloads = set()
 followed = set()
 qbit_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 sync_run = {"current": None, "queued": 0}
+# The videos that want Bulgarian subtitles, from Jellyfin every WANTED_REFRESH; the site searches by IMDb id
+downloads_run = {"wanted": [], "review": {}, "listed_at": 0.0, "paused_until": 0.0}
+searches = {}
+# Jellyfin's item id of every movie and episode path, for refresh_video
+item_ids = {"at": 0.0, "ids": {}}
+# Alignments auto_fix couldn't apply; left on the status page until a restart
+not_fixed = set()
 activity = collections.deque(maxlen=500)
 activity_seq = [0]
 # The numbering above starts over with every start; the page compares this to know its last line is stale
@@ -139,16 +160,35 @@ CREATE TABLE IF NOT EXISTS subtitles (
     size INTEGER NOT NULL,
     mtime REAL NOT NULL,
     checked_at REAL NOT NULL,
-    -- ok, offset (waits on the status page), failed, fixed, dismissed
+    -- ok, offset (waits on the status page), failed, fixed, dismissed, restored (the original put back)
     state TEXT NOT NULL,
     offset REAL,
     scale REAL,
     detail TEXT NOT NULL
 );
+-- The last search for Bulgarian subtitles for a video: found, none (nothing listed), nomatch (none lined up),
+-- more (tried MAX_TRIES, the rest on the next pass) or failed; tried holds every file tried, so none is tried twice
+CREATE TABLE IF NOT EXISTS downloads (
+    video TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    subtitle TEXT,
+    tried TEXT NOT NULL,
+    checked_at REAL NOT NULL,
+    detail TEXT NOT NULL
+);
+-- What the user said about a movie's or series' folder whose sound names no language: bg (dubbed) or subs (wants
+-- Bulgarian subtitles); tagged holds the MKV tracks then set to Bulgarian, [path, sound track position], to undo it by
+CREATE TABLE IF NOT EXISTS audio (
+    folder TEXT PRIMARY KEY,
+    decision TEXT NOT NULL,
+    decided_at REAL NOT NULL,
+    tagged TEXT NOT NULL DEFAULT '[]'
+);
 """)
 # A failed check is retried after a restart, which is when the checker itself may have changed
 db.execute("DELETE FROM subtitles WHERE state = 'failed'")
 os.makedirs(SYNCED_DIR, exist_ok=True)
+os.makedirs(SUBTITLE_CACHE, exist_ok=True)
 
 
 def log(text):
@@ -180,6 +220,9 @@ seed_activity()
 
 
 def jellyfin(path, method="GET", body=None, **params):
+    if path == "/Items" and "IncludeItemTypes" in params:
+        # Otherwise the movies of a collection are listed as the collection alone
+        params.setdefault("CollapseBoxSetItems", "false")
     query = "?" + urllib.parse.urlencode(params) if params else ""
     headers = {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"', "Accept": "application/json", "Content-Type": "application/json"}
     data = None if body is None else json.dumps(body).encode()
@@ -1009,11 +1052,58 @@ def describe(offset, scale):
     return "; ".join(parts) or f"наред ({offset:+.2f} s)"
 
 
-def check_subtitle(subtitle, video):
-    label = subtitle_label(subtitle)
-    sync_run["current"] = f"{label}: проверява {os.path.basename(subtitle)}"
-    st = os.stat(subtitle)
-    out = synced_path(subtitle)
+def safe_to_fix(offset, scale):
+    """Whether an alignment can be applied without a look: a plain shift, or a shift with one of the usual frame
+    rate conversions. Far shifts are mostly ffsubsync locking onto the wrong speech (it searches only ±60 s)."""
+    return abs(offset) <= MAX_AUTO_OFFSET and any(abs(scale - s) < 0.0005 for s in SAFE_SCALES)
+
+
+def apply_fix(row, auto=False):
+    """Replaces a subtitle with its aligned copy, keeping the original as <subtitle>.orig; call with lock held."""
+    path, out, orig = row["path"], synced_path(row["path"]), row["path"] + ".orig"
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        raise Conflict("the subtitle is gone")
+    # The aligned copy is of the file as it was checked
+    if st.st_size != row["size"] or st.st_mtime != row["mtime"] or not os.path.isfile(out):
+        raise Conflict("the subtitle changed since the check; it is checked again")
+    if os.path.exists(orig):
+        raise Conflict(f"{os.path.basename(orig)} already exists")
+    # The subtitle is rewritten in place, keeping its owner, mode and the NAS's ACLs: a new file would take
+    # its mode from stat, which reads 000 here for files whose access UGOS grants through ACLs only
+    shutil.copyfile(path, orig)
+    os.chown(orig, st.st_uid, st.st_gid)
+    os.chmod(orig, st.st_mode & 0o7777 or 0o777)
+    shutil.copyfile(out, path)
+    os.remove(out)
+    new = os.stat(path)
+    detail = row["detail"] + ("; поправени автоматично" if auto else "")
+    db.execute("UPDATE subtitles SET state = 'fixed', size = ?, mtime = ?, checked_at = ?, detail = ? WHERE id = ?",
+               (new.st_size, new.st_mtime, time.time(), detail, row["id"]))
+    event(path, "fixed", f"{os.path.basename(path)}: {detail}; оригиналът е в {os.path.basename(orig)}", subtitle_label(path))
+
+
+def auto_fix():
+    """Applies every waiting alignment that's safe_to_fix; returns whether it did any."""
+    with lock:
+        rows = [r for r in db.execute("SELECT * FROM subtitles WHERE state = 'offset' ORDER BY checked_at DESC")
+                if (r["id"], r["size"], r["mtime"]) not in not_fixed and safe_to_fix(r["offset"], r["scale"])]
+    for row in rows:
+        with lock:
+            try:
+                apply_fix(row, auto=True)
+            except (Conflict, OSError) as e:
+                not_fixed.add((row["id"], row["size"], row["mtime"]))
+                log(f"error {subtitle_label(row['path'])}: {os.path.basename(row['path'])} not fixed: {e}")
+                continue
+        refresh_video(row["video"], subtitle_label(row["path"]))
+    return bool(rows)
+
+
+def align(video, subtitle, out):
+    """(state, offset, scale, detail) of a subtitle against the speech in the video, its aligned copy in out:
+    state is ok, offset (out holds the fix) or failed."""
     result, error = None, None
     try:
         # Its own process at the lowest priority, so a check never holds up playback or transcoding
@@ -1026,13 +1116,19 @@ def check_subtitle(subtitle, video):
             error = next((l.strip() for l in reversed((proc.stderr + proc.stdout).splitlines()) if l.strip()), f"exit code {proc.returncode}")
     except subprocess.TimeoutExpired:
         error = f"не приключи за {SYNC_TIMEOUT // 60} мин"
-    offset = scale = None
     if result and result["sync_was_successful"]:
         offset, scale = result["offset_seconds"], result["framerate_scale_factor"]
         state = "offset" if abs(offset) >= MIN_OFFSET or abs(scale - 1) > 0.001 else "ok"
-        detail = describe(offset, scale)
-    else:
-        state, detail = "failed", error or "ffsubsync не намери съвпадение с говора"
+        return state, offset, scale, describe(offset, scale)
+    return "failed", None, None, error or "ffsubsync не намери съвпадение с говора"
+
+
+def check_subtitle(subtitle, video):
+    label = subtitle_label(subtitle)
+    sync_run["current"] = f"{label}: проверява {os.path.basename(subtitle)}"
+    st = os.stat(subtitle)
+    out = synced_path(subtitle)
+    state, offset, scale, detail = align(video, subtitle, out)
     if state != "offset" and os.path.exists(out):
         os.remove(out)
     with lock:
@@ -1050,10 +1146,12 @@ def check_subtitle(subtitle, video):
 def refresh_video(video, label):
     # Jellyfin keeps an external subtitle's stream from the last scan and doesn't notice a rewrite or a new file
     try:
-        item = next((i for i in jellyfin("/Items", Recursive="true", IncludeItemTypes="Movie,Episode", Fields="Path", Limit=100000)["Items"]
-                     if i.get("Path") == video), None)
-        if item:
-            jellyfin(f"/Items/{item['Id']}/Refresh", "POST", MetadataRefreshMode="Default", ImageRefreshMode="Default")
+        # Listing every item takes seconds, and fixes and downloads come in runs
+        if video not in item_ids["ids"] or time.time() - item_ids["at"] > 600:
+            items = jellyfin("/Items", Recursive="true", IncludeItemTypes="Movie,Episode", Fields="Path", Limit=100000)["Items"]
+            item_ids.update(at=time.time(), ids={i["Path"]: i["Id"] for i in items if i.get("Path")})
+        if video in item_ids["ids"]:
+            jellyfin(f"/Items/{item_ids['ids'][video]}/Refresh", "POST", MetadataRefreshMode="Default", ImageRefreshMode="Default")
         else:
             log(f"error {label}: no Jellyfin item for {os.path.basename(video)}, refresh it by hand")
     except (urllib.error.URLError, TimeoutError) as e:
@@ -1104,6 +1202,256 @@ def convert_microdvd(subtitle, video):
     return True
 
 
+def bulgarian_stream(stream):
+    return (stream.get("Language") or "").lower() in ("bul", "bg") or bool(re.search(r"bulgar|бълг|\bbg\b", stream.get("Title") or "", re.I))
+
+
+def bulgarian_text(text):
+    letters = [c for c in text if c.isalpha()]
+    return bool(letters) and sum("Ѐ" <= c <= "ӿ" for c in letters) / len(letters) > 0.3
+
+
+def bulgarian_files(video):
+    """The Bulgarian subtitle files next to a video: a bg language in the name, or Cyrillic text."""
+    folder, stem = os.path.dirname(video), os.path.splitext(os.path.basename(video))[0]
+    found = []
+    for name in os.listdir(folder):
+        rest = name[len(stem):]
+        if not name.startswith(stem + ".") or not SUBTITLE.fullmatch(rest):
+            continue
+        path = os.path.join(folder, name)
+        if any(LANGUAGES.get(part.lower()) == "bg" for part in rest.split(".")[1:-1]) or subtitle_language(path) == "bg":
+            found.append(path)
+    return found
+
+
+def note_review(review, folder, library, match, decision, video, item):
+    group = review.setdefault(folder, {"folder": folder, "library": library, "title": match.group(1), "year": int(match.group(2)),
+                                       "decision": decision, "videos": 0, "sample": os.path.basename(video),
+                                       "audio": collections.Counter(), "added": ""})
+    group["videos"] += 1
+    audio = [s for s in item.get("MediaStreams") or [] if s["Type"] == "Audio"]
+    group["audio"][", ".join(f"{s.get('Language') or 'und'} {s.get('Codec')} {s.get('Channels')}ch" for s in audio) or "без звук"] += 1
+    group["added"] = max(group["added"], item.get("DateCreated") or "")
+
+
+def wanted_subtitles():
+    """Every organized movie and episode without Bulgarian sound or a good Bulgarian subtitle, newest first, and per
+    folder the ones whose sound names no language, for the user to say whether that is a Bulgarian dub. A Bulgarian
+    subtitle that failed its check or is too far off to fix on its own is in "replace"."""
+    with lock:
+        bad = {r["path"] for r in db.execute("SELECT path, state, offset, scale FROM subtitles WHERE state IN ('failed', 'offset')")
+               if r["state"] == "failed" or not safe_to_fix(r["offset"], r["scale"])}
+        decisions = dict(db.execute("SELECT folder, decision FROM audio").fetchall())
+    folders = {f["Name"]: f for f in jellyfin("/Library/VirtualFolders")}
+    wanted, review = [], {}
+    # The Bulgarian libraries are dubbed
+    for name in [n for n in LIBRARIES + SERIES_LIBRARIES if n in folders and not n.endswith("български")]:
+        library, series = folders[name], name in SERIES_LIBRARIES
+        items = jellyfin("/Items", ParentId=library["ItemId"], Recursive="true", IncludeItemTypes="Episode" if series else "Movie",
+                         Fields="Path,MediaStreams,DateCreated", Limit=100000)["Items"]
+        for item in items:
+            video = item.get("Path") or ""
+            location = next((l for l in library["Locations"] if video.startswith(l.rstrip("/") + "/")), None)
+            top = location and os.path.relpath(video, location).split("/")[0]
+            m = top and re.fullmatch(r"(.+) \((\d{4})\) \[imdbid-(tt\d+)\]", top)
+            if not m or not os.path.isfile(video):
+                continue
+            if series and (item.get("ParentIndexNumber") is None or item.get("IndexNumber") is None or item.get("IndexNumberEnd")):
+                continue
+            folder = os.path.join(location.rstrip("/"), top)
+            streams = item.get("MediaStreams") or []
+            audio = [s for s in streams if s["Type"] == "Audio"]
+            untagged = any((s.get("Language") or "und").lower() == "und" for s in audio)
+            if folder in decisions:
+                note_review(review, folder, name, m, decisions[folder], video, item)
+            if decisions.get(folder) == "bg":
+                continue
+            if re.search(r"bg[ ._-]?audio", video, re.I) or any(bulgarian_stream(s) for s in audio):
+                continue
+            if any(s["Type"] == "Subtitle" and not s.get("IsExternal") and bulgarian_stream(s) for s in streams):
+                continue
+            files = bulgarian_files(video)
+            if files and not set(files) <= bad:
+                continue
+            # Sound without a language is often a Bulgarian dub, kids' films most of all: the user says which
+            if untagged and folder not in decisions:
+                note_review(review, folder, name, m, None, video, item)
+                continue
+            fps = next((s.get("RealFrameRate") or s.get("AverageFrameRate") for s in streams if s["Type"] == "Video"), None)
+            wanted.append({"video": video, "title": m.group(1), "year": int(m.group(2)), "imdb": m.group(3), "fps": fps,
+                           "season": item["ParentIndexNumber"] if series else None, "episode": item["IndexNumber"] if series else None,
+                           "replace": files, "added": item.get("DateCreated") or ""})
+    wanted.sort(key=lambda w: w["added"], reverse=True)
+    for group in review.values():
+        group["audio"] = group["audio"].most_common(1)[0][0]
+    return wanted, review
+
+
+def search_subtitles(w):
+    """The listings for a video's title, best first; a series is searched once for all its episodes."""
+    key = w["imdb"]
+    cached = searches.get(key)
+    if not cached or time.time() - cached[0] > SEARCH_TTL:
+        found = bg_subtitles.sab_search(w["imdb"])
+        found += bg_subtitles.unacs_search(w["title"].split(" - ")[0], None, w["imdb"])
+        searches[key] = cached = (time.time(), found)
+
+    def rank(c):
+        if w["season"] is None:
+            numbers = 0
+        else:
+            numbers = {(w["season"], w["episode"]): 0, (w["season"], None): 1, (None, None): 2}.get(c["numbers"], 9)
+        fps_differs = bool(w["fps"] and c["fps"] and abs(w["fps"] - c["fps"]) > 0.01)
+        return numbers, fps_differs, -c["downloads"]
+
+    return [c for c in sorted(cached[1], key=rank) if rank(c)[0] < 9]
+
+
+def subtitle_entries(c, w):
+    """The files of a listing that could be the video's subtitle."""
+    entries = [(n, raw) for n, raw in bg_subtitles.files(c, SUBTITLE_CACHE) if os.path.splitext(n)[1].lower() in SYNC_EXTS | {".sub"}]
+    if w["season"] is None:
+        # A film split over several files doesn't fit one video
+        return [] if len(entries) > 1 and any(re.search(r"(?:cd|part|disc)[ ._-]?\d", n, re.I) for n, _ in entries) else entries
+
+    def numbers(name):
+        m = EPISODE.search(name) or re.search(r"(?<!\d)(\d{1,2})x(\d{2,3})(?!\d)", name)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    wanted = (w["season"], w["episode"])
+    matching = [(n, raw) for n, raw in entries if numbers(n) == wanted]
+    # A listing for one episode whose file doesn't say which
+    if not matching and c["numbers"] == wanted and len(entries) == 1 and numbers(entries[0][0]) is None:
+        matching = entries
+    return matching
+
+
+def subtitle_text(name, raw, fps):
+    """A downloaded subtitle as (extension, UTF-8 text), MicroDVD turned into .srt; None when it isn't Bulgarian text."""
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1251", errors="replace")
+    if not bulgarian_text(text[:200_000]):
+        return None
+    ext = os.path.splitext(name)[1].lower()
+    if ext == ".sub":
+        if not MICRODVD.match(text.encode()[:64]) or not fps:
+            return None
+        subs = pysubs2.SSAFile.from_string(text, format_="microdvd", fps=fps)
+        return ".srt", subs.to_string("srt")
+    return ext, text
+
+
+def install_subtitle(w, source, ext, c, state, offset, scale, detail):
+    video = w["video"]
+    target = os.path.splitext(video)[0] + ".bg" + ext
+    for old in w["replace"]:
+        aside = old + ".replaced"
+        if os.path.exists(aside):
+            aside = f"{old}.replaced-{int(time.time())}"
+        os.rename(old, aside)
+    if os.path.exists(target):
+        raise Conflict(f"{os.path.basename(target)} already exists")
+    shutil.copyfile(source, target)
+    st = os.stat(video)
+    # A new file's mode reads 000 here (UGOS ACLs), see apply_fix
+    os.chown(target, st.st_uid, st.st_gid)
+    os.chmod(target, 0o666)
+    new = os.stat(target)
+    detail = f"{c['site']}: {c['title']}" + (f"; {detail}, изравнени" if state == "offset" else "")
+    with lock:
+        # Already checked here, so the subtitle check doesn't run ffsubsync on it again
+        db.execute("""INSERT INTO subtitles (path, video, size, mtime, checked_at, state, offset, scale, detail) VALUES (?, ?, ?, ?, ?, 'ok', ?, ?, ?)
+                      ON CONFLICT(path) DO UPDATE SET video = excluded.video, size = excluded.size, mtime = excluded.mtime, checked_at = excluded.checked_at,
+                      state = 'ok', offset = excluded.offset, scale = excluded.scale, detail = excluded.detail""",
+                   (target, video, new.st_size, new.st_mtime, time.time(), offset, scale, "изтеглени от " + detail))
+        replaced = f"; заменени {', '.join(os.path.basename(p) for p in w['replace'])}" if w["replace"] else ""
+        event(target, "bgsub", f"{os.path.basename(target)} от {detail}{replaced}", subtitle_label(target))
+    refresh_video(video, subtitle_label(target))
+    return target
+
+
+def record_download(video, state, tried, detail, subtitle=None):
+    with lock:
+        db.execute("""INSERT INTO downloads (video, state, subtitle, tried, checked_at, detail) VALUES (?, ?, ?, ?, ?, ?)
+                      ON CONFLICT(video) DO UPDATE SET state = excluded.state, subtitle = excluded.subtitle, tried = excluded.tried,
+                      checked_at = excluded.checked_at, detail = excluded.detail""",
+                   (video, state, subtitle, json.dumps(sorted(tried)), time.time(), detail))
+
+
+def download_subtitle(w, tried):
+    """Tries the listings for one video until a subtitle lines up with its speech."""
+    label = subtitle_label(w["video"])
+    candidate = os.path.join(SUBTITLE_CACHE, "candidate")
+    attempts, listed = 0, 0
+    for c in search_subtitles(w):
+        try:
+            entries = subtitle_entries(c, w)
+        except (OSError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as e:
+            log(f"error {label}: {c['site']} {c['id']}: {e!r}")
+            continue
+        for name, raw in entries:
+            key = f"{c['site']}:{c['id']}:{name}"
+            listed += 1
+            if key in tried:
+                continue
+            if attempts == MAX_TRIES:
+                return "more", f"пробвани {len(tried)} досега, продължава при следващото обхождане", None
+            converted = subtitle_text(name, raw, c["fps"] or w["fps"])
+            tried.add(key)
+            if not converted:
+                continue
+            attempts += 1
+            ext, text = converted
+            sync_run["current"] = f"{label}: проверява {c['site']}: {name}"
+            with open(candidate + ext, "w", encoding="utf-8") as f:
+                f.write(text)
+            aligned = candidate + ".aligned" + ext
+            state, offset, scale, detail = align(w["video"], candidate + ext, aligned)
+            if state == "ok" or (state == "offset" and safe_to_fix(offset, scale)):
+                target = install_subtitle(w, aligned if state == "offset" else candidate + ext, ext, c, state, offset, scale, detail)
+                return "found", f"{c['site']}: {c['title']} ({name})", target
+            log(f"rejected {label}: {c['site']}: {name}: {detail}")
+    if not listed:
+        return "none", f"няма в сайтовете; пак след {RETRY_NONE // 86400} дни", None
+    return "nomatch", f"пробвани {len(tried)}, никои не съвпаднаха с говора; пак след {RETRY_NOMATCH // 86400} дни", None
+
+
+def download_step():
+    """Looks for Bulgarian subtitles for the next video that needs them; returns whether there was one."""
+    if time.time() < downloads_run["paused_until"]:
+        return False
+    if time.time() - downloads_run["listed_at"] > WANTED_REFRESH:
+        downloads_run["wanted"], downloads_run["review"] = wanted_subtitles()
+        downloads_run["listed_at"] = time.time()
+    with lock:
+        rows = {r["video"]: r for r in db.execute("SELECT * FROM downloads")}
+    retry = {"none": RETRY_NONE, "nomatch": RETRY_NOMATCH, "found": RETRY_NOMATCH}
+    for w in downloads_run["wanted"]:
+        row = rows.get(w["video"])
+        if row and (row["checked_at"] > downloads_run["listed_at"] or time.time() - row["checked_at"] < retry.get(row["state"], 0)):
+            continue
+        label = subtitle_label(w["video"])
+        sync_run["current"] = f"{label}: търси български субтитри"
+        tried = set(json.loads(row["tried"])) if row else set()
+        try:
+            state, detail, target = download_subtitle(w, tried)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            log(f"error subtitle sites: {e!r}; tried again in an hour")
+            downloads_run["paused_until"] = time.time() + 3600
+            return False
+        except (Conflict, OSError) as e:
+            state, detail, target = "failed", str(e), None
+            log(f"error {label}: {e}")
+        record_download(w["video"], state, tried, detail, target)
+        if state != "found":
+            log(f"{state} {label}: {os.path.basename(w['video'])}: {detail}")
+        return True
+    return False
+
+
 def subtitle_loop():
     while True:
         sync_wake.clear()
@@ -1115,10 +1463,14 @@ def subtitle_loop():
                             sync_run["current"] = f"{subtitle_label(subtitle)}: превръща {os.path.basename(subtitle)} в .srt"
                             convert_microdvd(subtitle, video)
             sync_run["current"] = None
+            auto_fix()
             todo = pending_subtitles()
             sync_run["queued"] = len(todo)
             if todo:
                 check_subtitle(*todo[0])
+                continue
+            # Only when every subtitle on disk is checked: a new download's own check comes first
+            if download_step():
                 continue
         except Exception as e:
             log(f"error subtitles: {e!r}")
@@ -1142,7 +1494,12 @@ def api_status():
         recent = [dict(r) for r in db.execute("SELECT at, path, detail FROM events WHERE kind = 'moved' ORDER BY at DESC, id DESC LIMIT 30")]
         subtitles = [{**dict(r), "label": subtitle_label(r["path"])} for r in db.execute("SELECT id, path, checked_at, state, offset, scale, detail FROM subtitles WHERE state != 'ok' ORDER BY checked_at DESC")]
         counts = dict(db.execute("SELECT state, COUNT(*) FROM subtitles GROUP BY state").fetchall())
-    return {"run": last_run, "items": items, "recent": recent, "subtitles": {"run": sync_run, "counts": counts, "items": subtitles}}
+        downloads = [{**dict(r), "label": subtitle_label(r["video"])} for r in db.execute(
+            "SELECT video, state, checked_at, detail FROM downloads WHERE state != 'none' ORDER BY checked_at DESC LIMIT 200")]
+        download_counts = dict(db.execute("SELECT state, COUNT(*) FROM downloads GROUP BY state").fetchall())
+        review = sorted(downloads_run["review"].values(), key=lambda g: (g["decision"] is not None, g["library"], g["title"]))
+    return {"review": review, "run": last_run, "items": items, "recent": recent, "subtitles": {"run": sync_run, "counts": counts, "items": subtitles},
+            "downloads": {"counts": download_counts, "wanted": len(downloads_run["wanted"]), "items": downloads}}
 
 
 @app.get("/api/activity")
@@ -1186,27 +1543,11 @@ def subtitle_row(sub_id, state):
 def fix_subtitle(sub_id: int):
     with lock:
         row = subtitle_row(sub_id, "offset")
-        path, out, orig = row["path"], synced_path(row["path"]), row["path"] + ".orig"
         try:
-            st = os.stat(path)
-        except FileNotFoundError:
-            raise HTTPException(409, "the subtitle is gone")
-        # The aligned copy is of the file as it was checked
-        if st.st_size != row["size"] or st.st_mtime != row["mtime"] or not os.path.isfile(out):
-            raise HTTPException(409, "the subtitle changed since the check; it is checked again")
-        if os.path.exists(orig):
-            raise HTTPException(409, f"{os.path.basename(orig)} already exists")
-        # The subtitle is rewritten in place, keeping its owner, mode and the NAS's ACLs: a new file would take
-        # its mode from stat, which reads 000 here for files whose access UGOS grants through ACLs only
-        shutil.copyfile(path, orig)
-        os.chown(orig, st.st_uid, st.st_gid)
-        os.chmod(orig, st.st_mode & 0o7777 or 0o777)
-        shutil.copyfile(out, path)
-        os.remove(out)
-        new = os.stat(path)
-        db.execute("UPDATE subtitles SET state = 'fixed', size = ?, mtime = ?, checked_at = ? WHERE id = ?", (new.st_size, new.st_mtime, time.time(), sub_id))
-        event(path, "fixed", f"{os.path.basename(path)}: {row['detail']}; оригиналът е в {os.path.basename(orig)}", subtitle_label(path))
-    refresh_video(row["video"], subtitle_label(path))
+            apply_fix(row)
+        except Conflict as e:
+            raise HTTPException(409, str(e))
+    refresh_video(row["video"], subtitle_label(row["path"]))
     return {"ok": True}
 
 
@@ -1218,6 +1559,169 @@ def dismiss_subtitle(sub_id: int):
         if os.path.exists(synced_path(row["path"])):
             os.remove(synced_path(row["path"]))
         event(row["path"], "dismissed", f"{os.path.basename(row['path'])}: {row['detail']}", subtitle_label(row["path"]))
+    return {"ok": True}
+
+
+@app.post("/api/subtitles/{sub_id}/restore")
+def restore_subtitle(sub_id: int):
+    with lock:
+        row = subtitle_row(sub_id, "fixed")
+        path, orig = row["path"], row["path"] + ".orig"
+        if not os.path.isfile(orig):
+            raise HTTPException(409, f"{os.path.basename(orig)} is gone")
+        # Rewritten in place for the same reason as in apply_fix
+        shutil.copyfile(orig, path)
+        os.remove(orig)
+        st = os.stat(path)
+        # Recorded as checked, so the restored file isn't aligned again
+        db.execute("UPDATE subtitles SET state = 'restored', size = ?, mtime = ?, checked_at = ? WHERE id = ?", (st.st_size, st.st_mtime, time.time(), sub_id))
+        event(path, "restored", f"{os.path.basename(path)}: върнат оригиналът", subtitle_label(path))
+    refresh_video(row["video"], subtitle_label(path))
+    return {"ok": True}
+
+
+tag_lock = threading.Lock()
+AUDIO_DECISIONS = {"bg": "български дублаж", "subs": "трябват субтитри", None: "без отговор"}
+
+
+def mkv_audio_untagged(path):
+    """Positions (from 1, in mkvpropedit's track:aN) of a file's sound tracks with no language, as Jellyfin reads them."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream_tags=language", "-of", "json", path],
+                         capture_output=True, text=True, timeout=120)
+    streams = json.loads(out.stdout).get("streams", []) if out.stdout else []
+    return [i + 1 for i, s in enumerate(streams) if (s.get("tags", {}).get("language") or "und").lower() == "und"]
+
+
+def duration(path):
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                         capture_output=True, text=True, timeout=120)
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return None
+
+
+def remux_bulgarian(path, position):
+    """Rewrites a video whose container can't name a track's language as MKV with that sound track (its position
+    among the sound tracks) set to Bulgarian; returns the MKV's path. The streams are copied, not encoded again,
+    and the MKV keeps the name, so subtitles, NFO and images next to it still go with it."""
+    target = os.path.splitext(path)[0] + ".mkv"
+    if os.path.exists(target):
+        raise Conflict(f"{os.path.basename(target)} already exists")
+    tracks = json.loads(subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True, timeout=120).stdout or "{}").get("tracks", [])
+    audio = [t["id"] for t in tracks if t["type"] == "audio"]
+    if len(audio) < position:
+        raise Conflict(f"mkvmerge sees {len(audio)} sound tracks")
+    part = target + ".part"
+    r = subprocess.run(["mkvmerge", "-q", "-o", part, "--language", f"{audio[position - 1]}:bg", path], capture_output=True, text=True, timeout=3600)
+    try:
+        # 1 is warnings only
+        if r.returncode > 1:
+            raise Conflict(f"mkvmerge: {(r.stdout + r.stderr).strip()[-300:]}")
+        before, after = duration(path), duration(part)
+        if not before or not after or abs(before - after) > 2:
+            raise Conflict(f"MKV lasts {after} s, the original {before} s")
+        st = os.stat(path)
+        os.chown(part, st.st_uid, st.st_gid)
+        os.chmod(part, 0o666)
+        os.rename(part, target)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+    os.remove(path)
+    with lock:
+        db.execute("UPDATE subtitles SET video = ? WHERE video = ?", (target, path))
+        db.execute("DELETE FROM downloads WHERE video = ?", (path,))
+        event(target, "remuxed", f"{os.path.basename(path)} → MKV с българско аудио", subtitle_label(target))
+    return target
+
+
+REMUX_EXTS = (".avi", ".mp4", ".m4v", ".mpg", ".mpeg")
+
+
+def tag_audio(folder, decision):
+    """For a dub, sets the one sound track with no language in every video under folder to Bulgarian, so Jellyfin
+    and players see it too: in place in an MKV, by rewriting the rest as MKV. Other answers put the MKV tracks set
+    this way back to no language; a rewritten video stays MKV."""
+    with lock:
+        row = db.execute("SELECT tagged FROM audio WHERE folder = ?", (folder,)).fetchone()
+    done, changed, remuxed = json.loads(row["tagged"]) if row else [], [], 0
+
+    def save():
+        with lock:
+            db.execute("UPDATE audio SET tagged = ? WHERE folder = ?", (json.dumps(done), folder))
+
+    if decision == "bg":
+        for root, _, names in os.walk(folder):
+            for n in sorted(names):
+                path, ext = os.path.join(root, n), os.path.splitext(n)[1].lower()
+                if ext not in (".mkv",) + REMUX_EXTS or any(p == path for p, _ in done):
+                    continue
+                untagged = mkv_audio_untagged(path)
+                # With two untagged tracks it can't be told which is the dub
+                if len(untagged) != 1:
+                    continue
+                if ext != ".mkv":
+                    try:
+                        done.append([remux_bulgarian(path, untagged[0]), untagged[0]])
+                        remuxed += 1
+                        save()
+                    except (Conflict, OSError, subprocess.TimeoutExpired) as e:
+                        log(f"error {subtitle_label(path)}: {os.path.basename(path)} not rewritten as MKV: {e}")
+                    continue
+                r = subprocess.run(["mkvpropedit", path, "--edit", f"track:a{untagged[0]}", "--set", "language=bul", "--set", "language-ietf=bg"],
+                                   capture_output=True, text=True, timeout=300)
+                if r.returncode == 0:
+                    done.append([path, untagged[0]])
+                    changed.append(path)
+                else:
+                    log(f"error {subtitle_label(path)}: mkvpropedit: {(r.stdout + r.stderr).strip()[-300:]}")
+    else:
+        for path, number in done:
+            if os.path.isfile(path):
+                subprocess.run(["mkvpropedit", path, "--edit", f"track:a{number}", "--set", "language=und", "--delete", "language-ietf"],
+                               capture_output=True, timeout=300)
+                changed.append(path)
+        done = []
+    save()
+    for path in changed:
+        refresh_video(path, subtitle_label(path))
+    # Jellyfin only finds the new files on a scan
+    if remuxed:
+        try:
+            jellyfin("/Library/Refresh", "POST")
+        except (urllib.error.URLError, TimeoutError) as e:
+            log(f"error Jellyfin scan after rewriting as MKV failed: {e!r}")
+    if changed or remuxed:
+        log(f"{'bul' if decision == 'bg' else 'und'} audio: {len(changed)} MKV, {remuxed} rewritten as MKV in {os.path.basename(folder)}")
+
+
+@app.post("/api/audio")
+def audio_decision(body: dict):
+    folder, decision = body.get("folder"), body.get("decision")
+    if decision not in ("bg", "subs", None):
+        raise HTTPException(400, "decision is bg, subs or null")
+    # Only folders from the list, so no request names an arbitrary path
+    group = downloads_run["review"].get(folder)
+    if not group:
+        raise HTTPException(404, "unknown folder")
+    with lock:
+        if decision:
+            db.execute("""INSERT INTO audio (folder, decision, decided_at) VALUES (?, ?, ?)
+                          ON CONFLICT(folder) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at""",
+                       (folder, decision, time.time()))
+        group["decision"] = decision
+        event(folder, "audio", f"{group['title']}: {AUDIO_DECISIONS[decision]}", group["title"])
+    def apply():
+        # One at a time, so quick changes of mind are applied in order
+        with tag_lock:
+            tag_audio(folder, decision)
+            if not decision:
+                with lock:
+                    db.execute("DELETE FROM audio WHERE folder = ?", (folder,))
+    threading.Thread(target=apply, daemon=True).start()
+    # The list of videos to find subtitles for is made again on the next step
+    downloads_run["listed_at"] = 0
     return {"ok": True}
 
 

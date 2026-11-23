@@ -32,16 +32,6 @@
       </table>
     </div>
   </section>
-
-  <section class="card">
-    <h2>Последно подредени</h2>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Кога</th><th>Промяна</th></tr></thead>
-        <tbody id="recent"></tbody>
-      </table>
-    </div>
-  </section>
 </main>
 
 <script src="common/page.js"></script>
@@ -52,7 +42,7 @@ const STATES = [
   { key: "pending", label: "Чакащи", icon: "…" },
 ];
 const byKey = Object.fromEntries(STATES.map(s => [s.key, s]));
-let data = { items: [], recent: [], run: {} };
+let data = { items: [], run: {} };
 const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
 
 function renderRun() {
@@ -119,17 +109,6 @@ function renderTable() {
   }));
 }
 
-function renderRecent() {
-  const tbody = document.getElementById("recent");
-  if (!data.recent.length) {
-    tbody.replaceChildren(el("tr", {}, el("td", { colSpan: 2, className: "empty", textContent: "Още няма подредени филми и сериали." })));
-    return;
-  }
-  tbody.replaceChildren(...data.recent.map(r => el("tr", {},
-    el("td", { className: "time", textContent: fmtTime(r.at) }),
-    el("td", { textContent: r.detail }))));
-}
-
 async function refresh() {
   try {
     data = await (await fetch("api/status")).json();
@@ -140,7 +119,6 @@ async function refresh() {
   renderRun();
   renderTiles();
   if (!document.getElementById("tbody").contains(document.activeElement)) renderTable();
-  renderRecent();
 }
 
 const LOG_KIND = {

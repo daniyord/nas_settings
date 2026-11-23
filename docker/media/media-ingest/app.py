@@ -123,13 +123,7 @@ add_page(app, os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.ht
 def api_status():
     with lock:
         items = list(status.values())
-        recent = [
-            dict(r)
-            for r in db.execute(
-                "SELECT at, path, detail FROM events WHERE kind = 'moved' ORDER BY at DESC, id DESC LIMIT 30"
-            )
-        ]
-    return {"run": last_run, "items": items, "recent": recent}
+    return {"run": last_run, "items": items}
 
 
 @app.get("/api/activity")

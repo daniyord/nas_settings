@@ -6,6 +6,7 @@ title or year doesn't look like the file's name waits for a confirmation, or for
 import os
 import time
 
+from boxsets import wake as boxsets_wake
 from common.jellyfin import jellyfin
 from common.media import ORGANIZED, SETTLE_AFTER, SUBTITLE, VIDEO_EXTS, Conflict, with_language
 from common.tmdb import NotFound
@@ -87,6 +88,8 @@ def ingest(item, parts, location, label, details):
     if own and folder != target_dir:
         os.rename(folder, target_dir)
     untitled(target_dir, "movie", details)
+    # Its collection, if TMDB names one
+    boxsets_wake.set()
 
     new_path = os.path.join(target_dir, target + os.path.splitext(filename)[1])
     renamed_folder = own and folder != target_dir

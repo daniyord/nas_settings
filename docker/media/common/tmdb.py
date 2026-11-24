@@ -133,6 +133,10 @@ def episode(tmdb_id, season_number, number):
     )
 
 
+def collection(tmdb_id):
+    return get(f"collection/{tmdb_id}", append_to_response="images", **_image_params())
+
+
 def person(tmdb_id):
     return get(f"person/{tmdb_id}")
 

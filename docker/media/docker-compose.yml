@@ -24,6 +24,9 @@ services:
       - /volume6/MoviesAdult1:/moviesadult1
       # One photo per actor, <tmdb-id>.jpg, that our NFOs point to; media-ingest fills it
       - /volume1/MediaMeta/People:/people:ro
+      # The collections' folders (title, plot, artwork) where Jellyfin keeps them; who is in one Jellyfin keeps only
+      # in its database. media-ingest makes new ones through its API (boxsets.py)
+      - /volume1/MediaMeta/Collections:/config/data/data/collections
 
   jellyfin-tpdb-match:
     build: ./jellyfin-tpdb-match
@@ -83,6 +86,9 @@ services:
       - /volume3/Movies3:/movies3
       - /volume5/MoviesAdult/Erotic:/moviesadult/Erotic
       - /volume1/MediaMeta/People:/people
+      - /volume1/MediaMeta/Collections:/collections
+      # What each user watched, exported nightly (userdata.py)
+      - /volume1/MediaMeta/Userdata:/userdata
       # Whole volumes, so a download folder and the library are one mount and a download moves with a rename
       - /volume1:/volume1
       - /volume2:/volume2

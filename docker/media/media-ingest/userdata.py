@@ -1,7 +1,8 @@
 """What each user has watched, where they stopped and what they marked as a favorite, exported every night to
-DATA_DIR/userdata/<date>.json (the last KEEP are kept), so it outlives Jellyfin's database. Put back with
+USERDATA_DIR/<date>.json (MediaMeta/Userdata; the last KEEP are kept), so it outlives Jellyfin's database. Put
+back with
 
-    docker exec media-ingest python /app/userdata.py restore /data/userdata/<date>.json [--user NAME] [--to NAME] [--apply]
+    docker exec media-ingest python /app/userdata.py restore /userdata/<date>.json [--user NAME] [--to NAME] [--apply]
 
 which finds each item by its path, else by its ids, and without --apply only says what it would do."""
 
@@ -15,8 +16,7 @@ import time
 
 from common.jellyfin import jellyfin
 
-DATA_DIR = os.environ.get("DATA_DIR", "/data")
-EXPORT_DIR = os.path.join(DATA_DIR, "userdata")
+EXPORT_DIR = os.environ.get("USERDATA_DIR", "/userdata")
 KEEP = 30
 # UTC; 04:00 in Sofia in winter, when no one watches
 EXPORT_HOUR = 2

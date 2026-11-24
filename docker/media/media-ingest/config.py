@@ -34,6 +34,8 @@ VOLUME_PATHS = path_map(os.environ.get("VOLUME_PATHS", ""))
 PEOPLE_DIR = os.environ.get("PEOPLE_DIR", "/people")
 # As Jellyfin's own TMDB provider: the first actors only
 MAX_CAST = int(os.environ.get("MAX_CAST", "15"))
+# The collections' folders (collection.xml and artwork), mounted where Jellyfin keeps them (boxsets.py)
+COLLECTIONS_DIR = os.environ.get("COLLECTIONS_DIR", "/collections")
 # Libraries whose folders from before our NFOs are brought to them, in this order (PLAN_media_services.md, stage 3)
 MIGRATE_LIBRARIES = names(os.environ.get("MIGRATE_LIBRARIES", ""))
 STALE_RESCAN = 300

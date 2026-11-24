@@ -17,6 +17,7 @@ from common import nfo, tmdb
 from common.jellyfin import jellyfin, reread
 from common.web import NO_CACHE, add_page
 from config import INTERVAL, LIBRARIES, PEOPLE_DIR, PORT, QBIT_URL, SERIES_LIBRARIES, STALE_RESCAN
+from boxsets import boxsets_loop
 from downloads import download_loop
 from metadata import as_item, details, from_link, own
 from movies import check
@@ -337,6 +338,7 @@ if __name__ == "__main__":
     threading.Thread(target=people_loop, daemon=True).start()
     threading.Thread(target=names_loop, daemon=True).start()
     threading.Thread(target=catalog_loop, daemon=True).start()
+    threading.Thread(target=boxsets_loop, daemon=True).start()
     threading.Thread(target=migrate_loop, daemon=True).start()
     threading.Thread(target=export_loop, args=(log, event), daemon=True).start()
     if QBIT_URL:

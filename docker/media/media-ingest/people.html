@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Актьори</title>
+<link rel="stylesheet" href="common/page.css">
+</head>
+<body>
+<main>
+  <nav class="bar" id="bar"></nav>
+  <h1>Актьори</h1>
+  <div class="runbar">
+    <p class="sub" id="info">Зареждане…</p>
+    <input type="text" id="search" placeholder="Търси по име, на кирилица или латиница" autocomplete="off">
+  </div>
+
+  <section class="card" id="actor" hidden></section>
+
+  <div class="people" id="people"></div>
+  <button type="button" class="more" id="more" hidden>Покажи още</button>
+</main>
+
+<script src="common/page.js"></script>
+<script>
+const PAGE = 120;
+const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
+let actors = [], shown = PAGE;
+
+// Both scripts to one Latin spelling, so a name is found whichever one it or the search is written in
+const LATIN = { а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l",
+  м: "m", н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "ts", ч: "ch", ш: "sh", щ: "sht",
+  ъ: "a", ы: "y", ь: "", э: "e", ю: "yu", я: "ya", і: "i", ї: "yi", є: "ye", ј: "y", ћ: "c", ђ: "dj", џ: "dzh" };
+const fold = text => [...text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")]
+  .map(c => LATIN[c] ?? c).join("")
+  .replace(/kh/g, "h").replace(/[jy]+/g, "y").replace(/w/g, "v").replace(/(.)\1/g, "$1").replace(/[^a-z0-9]+/g, " ");
+
+function photo(id, has, name) {
+  if (!has) return el("span", { className: "photo none", textContent: name.slice(0, 1) });
+  return el("img", { className: "photo", src: `api/actors/${id}/photo`, alt: "", loading: "lazy" });
+}
+
+function matching() {
+  const q = fold(document.getElementById("search").value).trim();
+  return q ? actors.filter(a => a.folded.includes(q)) : actors;
+}
+
+function render() {
+  const found = matching();
+  const cards = found.slice(0, shown).map(a => {
+    const card = el("button", { type: "button", className: "person" },
+      photo(a.id, a.photo, a.name),
+      el("span", { className: "name", textContent: a.name }),
+      el("span", { className: "n", textContent: a.count === 1 ? "1 заглавие" : `${a.count} заглавия` }));
+    card.addEventListener("click", () => openActor(a.id));
+    return card;
+  });
+  const list = document.getElementById("people");
+  list.replaceChildren(...cards);
+  if (!found.length) list.append(el("p", { className: "empty", textContent: "Няма такъв актьор." }));
+  const more = document.getElementById("more");
+  more.hidden = found.length <= shown;
+  more.textContent = `Покажи още (${found.length - shown})`;
+}
+
+async function openActor(id) {
+  const box = document.getElementById("actor");
+  let a;
+  try {
+    a = await (await fetch(`api/actors/${id}`)).json();
+  } catch (e) { return; }
+  if (!a.titles) return;
+  const summary = actors.find(x => x.id === id);
+  const input = el("input", { type: "text", value: a.name });
+  const save = el("button", { type: "button", textContent: "Запиши" });
+  const msg = el("span", { className: "msg" });
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    msg.textContent = "";
+    try {
+      const res = await fetch(`api/actors/${id}/name`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: input.value }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || res.status);
+      const name = input.value.trim().split(/\s+/).join(" ");
+      if (summary) { summary.name = name; summary.folded = fold(name); }
+      msg.style.color = "var(--ink-2)";
+      msg.textContent = "Записано; NFO файловете се обновяват след малко.";
+      box.querySelector("h2").textContent = name;
+      render();
+    } catch (e) {
+      msg.style.color = "";
+      msg.textContent = `Не стана: ${e.message}`;
+    }
+    save.disabled = false;
+  });
+  const rows = a.titles.map(t => {
+    const title = t.item ? el("a", { href: jellyfinLink(t.item), target: "_blank", rel: "noopener", textContent: t.title })
+      : document.createTextNode(t.title);
+    return el("tr", {}, el("td", {}, title), el("td", { className: "time", textContent: t.year || "—" }),
+      el("td", { textContent: t.role || "" }), el("td", { textContent: t.library }));
+  });
+  box.replaceChildren(el("div", { className: "actor" },
+    photo(id, summary ? summary.photo : true, a.name),
+    el("div", {},
+      el("h2", { textContent: a.name }),
+      el("p", { className: "sub" },
+        el("a", { href: `https://www.themoviedb.org/person/${id}`, target: "_blank", rel: "noopener", textContent: "TMDB" }),
+        a.confirmed ? " · името е въведено ръчно" : ""),
+      el("div", { className: "actions" }, input, save, msg),
+      el("p", { className: "sub", textContent: "Името се сменя във всички филми и сериали." }),
+      el("div", { className: "table-wrap" }, el("table", {},
+        el("thead", {}, el("tr", {}, ...["Заглавие", "Година", "Роля", "Библиотека"].map(h => el("th", { textContent: h })))),
+        el("tbody", {}, ...rows))))));
+  box.hidden = false;
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function load() {
+  let res;
+  try {
+    res = await (await fetch("api/actors")).json();
+  } catch (e) {
+    document.getElementById("info").textContent = "Услугата не отговаря.";
+    setTimeout(load, 5000);
+    return;
+  }
+  if (res.built === null) {
+    document.getElementById("info").textContent = "Списъкът се събира от NFO файловете…";
+    setTimeout(load, 3000);
+    return;
+  }
+  actors = res.actors.map(([id, name, count, has]) => ({ id, name, count, photo: has, folded: fold(name) }));
+  document.getElementById("info").textContent =
+    `${actors.length} актьора в NFO файловете на филмите и сериалите; списъкът е от ${fmtTime(res.built)}.`;
+  render();
+}
+
+document.getElementById("search").addEventListener("input", () => { shown = PAGE; render(); });
+document.getElementById("more").addEventListener("click", () => { shown += PAGE; render(); });
+renderBar();
+load();
+</script>
+</body>
+</html>

@@ -65,6 +65,11 @@ button {
   font: inherit; color: var(--ink); cursor: pointer;
   background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
 }
+input[type=text] {
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; min-width: 0; flex: 1 1 16em;
+}
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
@@ -91,3 +96,15 @@ details.card > summary { cursor: pointer; }
 details.card > summary h2 { display: inline; margin: 0; }
 details.card[open] > summary { margin-bottom: 12px; }
 .card h3 { font-size: 14px; margin: 18px 0 8px; }
+.people { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+.person { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 0 0 8px; text-align: left; cursor: pointer;
+  color: inherit; font: inherit; overflow: hidden; }
+.person:hover { border-color: var(--ink-2); }
+.person .photo, .actor .photo { display: block; width: 100%; aspect-ratio: 2 / 3; object-fit: cover; background: var(--grid); }
+.person .photo.none, .actor .photo.none { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 28px; }
+.person .name { display: block; padding: 6px 8px 0; font-weight: 600; font-size: 13px; }
+.person .n { display: block; padding: 0 8px; color: var(--muted); font-size: 12px; }
+.actor { display: grid; grid-template-columns: 160px 1fr; gap: 16px; }
+.actor h2 { font-size: 18px; }
+@media (max-width: 560px) { .actor { grid-template-columns: 1fr; } .actor .photo { max-width: 200px; } }
+.more { margin-top: 16px; }

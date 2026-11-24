@@ -1,5 +1,5 @@
 """The status page's routes both services share: the page, its common style and script, and the summary the top
-bar of either page reads (from the other service's port, so it may be read from anywhere)."""
+bar of either page reads (through media-web, where both are under one address)."""
 
 import os
 
@@ -28,4 +28,4 @@ def add_page(app: FastAPI, page, summary):
 
     @app.get("/api/summary")
     def api_summary():
-        return JSONResponse(summary(), headers={"Access-Control-Allow-Origin": "*"})
+        return JSONResponse(summary())

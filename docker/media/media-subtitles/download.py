@@ -13,6 +13,7 @@ import urllib.error
 import pysubs2
 
 import bg_subtitles
+from audio import restore
 from common.jellyfin import jellyfin
 from common.media import EPISODE, LANGUAGES, SUBTITLE, Conflict, bulgarian_text, subtitle_language
 from config import (
@@ -90,7 +91,7 @@ def wanted_subtitles():
         }
         decisions = dict(db.execute("SELECT folder, decision FROM audio").fetchall())
     folders = {f["Name"]: f for f in jellyfin("/Library/VirtualFolders")}
-    wanted, review = [], {}
+    wanted, review, looked = [], {}, set()
     # The Bulgarian libraries are dubbed
     for name in [n for n in LIBRARIES + SERIES_LIBRARIES if n in folders and not n.endswith("български")]:
         library, series = folders[name], name in SERIES_LIBRARIES
@@ -116,6 +117,9 @@ def wanted_subtitles():
             ):
                 continue
             folder = os.path.join(location.rstrip("/"), top)
+            if folder not in decisions and folder not in looked:
+                looked.add(folder)
+                restore([folder], decisions)
             streams = item.get("MediaStreams") or []
             audio = [s for s in streams if s["Type"] == "Audio"]
             # Jellyfin lists a new file (one just rewritten as MKV) before it reads its streams: it is looked at once

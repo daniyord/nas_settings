@@ -51,6 +51,7 @@ executionEnvironments = [
     { root = "docker/media/media-ingest", extraPaths = ["docker/media"] },
     { root = "docker/media/media-subtitles", extraPaths = ["docker/media"] },
     { root = "docker/media/common", extraPaths = ["docker/media"] },
+    { root = "docker/media/jellyfin-setup", extraPaths = ["docker/media"] },
     { root = "docker/media/jellyfin-movie-ingest" },
     { root = "docker/media/jellyfin-tpdb-match" },
 ]

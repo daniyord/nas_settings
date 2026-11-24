@@ -24,6 +24,49 @@
   <div class="tiles" id="tiles"></div>
 
   <section class="card">
+    <h2>Снимки на актьорите</h2>
+    <div class="runbar">
+      <p class="sub" id="people">Зареждане…</p>
+      <button type="button" id="people-now">Обнови сега</button>
+    </div>
+  </section>
+
+  <section class="card" id="names-card" hidden>
+    <h2>Имена на актьори на кирилица</h2>
+    <p class="sub">TMDB ги има само на латиница. Потвърди или поправи името веднъж — важи за всички филми и сериали;
+      с латинското име остава на латиница.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>В TMDB</th><th>Заглавие</th><th>Име</th></tr></thead>
+        <tbody id="names"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" id="migration-card" hidden>
+    <h2>Старите папки към нашите NFO</h2>
+    <div class="runbar">
+      <p class="sub" id="migration">Зареждане…</p>
+      <button type="button" id="migration-now">Пусни сега</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Библиотека</th><th>Подредени</th><th>С разлики</th><th>Неразпознати</th><th>Грешки</th></tr></thead>
+        <tbody id="migration-libraries"></tbody>
+      </table>
+    </div>
+    <details id="migration-problems-box">
+      <summary>За преглед</summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Библиотека</th><th>Папка</th><th>Резултат</th><th>Детайл</th></tr></thead>
+          <tbody id="migration-problems"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
     <h2>Неподредени филми и сериали</h2>
     <div class="table-wrap">
       <table>
@@ -68,22 +111,59 @@ function renderTiles() {
     el("div", { className: "value", textContent: counts[s.key] }))));
 }
 
-function confirmButton(item) {
+// A row of controls that POST to api/items/<id>/<action> and refresh the table when it is done
+function action(item, path, controls, body) {
   const msg = el("span", { className: "msg" });
-  const button = el("button", { type: "button", textContent: "Потвърди match-а" });
-  button.onclick = async () => {
-    button.disabled = true;
+  const row = el("div", { className: "actions" }, ...controls, msg);
+  const send = async extra => {
+    row.querySelectorAll("button, input").forEach(c => { c.disabled = true; });
     msg.textContent = "";
     try {
-      const res = await fetch(`api/items/${encodeURIComponent(item.id)}/confirm`, { method: "POST" });
+      const res = await fetch(`api/items/${encodeURIComponent(item.id)}/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...(body ? body() : {}), ...extra }),
+      });
       if (!res.ok) throw new Error((await res.json()).detail || res.status);
       refresh();
     } catch (e) {
       msg.textContent = `${e.message || e}`;
-      button.disabled = false;
+      row.querySelectorAll("button, input").forEach(c => { c.disabled = false; });
     }
   };
-  return el("div", { style: "display:flex;gap:8px;align-items:center;margin-top:6px" }, button, msg);
+  return { row, send };
+}
+
+function actions(item) {
+  const rows = [];
+  if (item.tmdb || item.confirm) {
+    const controls = [];
+    if (item.tmdb) controls.push(el("a", { href: item.tmdb, target: "_blank", textContent: "Виж в TMDB" }));
+    const button = el("button", { type: "button", textContent: "Потвърди" });
+    if (item.confirm) controls.push(button);
+    const { row, send } = action(item, "confirm", controls);
+    button.onclick = () => send();
+    rows.push(row);
+  }
+  if (item.choose) {
+    const input = el("input", { type: "text", placeholder: "линк към TMDB или IMDb" });
+    const button = el("button", { type: "button", textContent: "Избери" });
+    const { row, send } = action(item, "match", [input, button], () => ({ link: input.value }));
+    button.onclick = () => send();
+    input.onkeydown = e => { if (e.key === "Enter") send(); };
+    rows.push(row);
+  }
+  if (item.title) {
+    const input = el("input", { type: "text", placeholder: "заглавие на български" });
+    const save = el("button", { type: "button", textContent: "Запиши" });
+    const keep = el("button", { type: "button", textContent: "Остави оригиналното" });
+    const { row, send } = action(item, "title", [input, save, keep], () => ({ title: input.value }));
+    save.onclick = () => send();
+    keep.onclick = () => send({ keep: true });
+    input.onkeydown = e => { if (e.key === "Enter") send(); };
+    rows.push(row);
+  }
+  return rows;
 }
 
 function renderTable() {
@@ -99,7 +179,7 @@ function renderTable() {
     const name = el("td", {}, el("a", { href: jellyfinLink(item.id), target: "_blank", textContent: item.file }));
     if (item.target) name.append(el("div", { className: "target", textContent: `→ ${item.target}` }));
     const detail = el("td", { textContent: item.detail });
-    if (item.confirm) detail.append(confirmButton(item));
+    detail.append(...actions(item));
     return el("tr", {},
       el("td", { textContent: item.library }),
       name,
@@ -108,6 +188,83 @@ function renderTable() {
       el("td", { className: "time", textContent: fmtTime(item.checked) }));
   }));
 }
+
+function renderNames() {
+  const names = data.actor_names || [];
+  document.getElementById("names-card").hidden = !names.length;
+  document.getElementById("names").replaceChildren(...names.map(a => {
+    const input = el("input", { type: "text", value: a.suggestion });
+    const save = el("button", { type: "button", textContent: "Запиши" });
+    const keep = el("button", { type: "button", textContent: "Остави на латиница" });
+    const msg = el("span", { className: "msg" });
+    const send = async name => {
+      save.disabled = keep.disabled = true;
+      try {
+        const res = await fetch(`api/actors/${a.tmdb_id}/name`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+        });
+        if (!res.ok) throw new Error((await res.json()).detail || res.status);
+        input.blur();
+        refresh();
+      } catch (e) {
+        msg.textContent = `${e.message || e}`;
+        save.disabled = keep.disabled = false;
+      }
+    };
+    save.onclick = () => send(input.value);
+    keep.onclick = () => send(a.latin);
+    input.onkeydown = e => { if (e.key === "Enter") send(input.value); };
+    return el("tr", {},
+      el("td", {}, el("a", { href: `https://www.themoviedb.org/person/${a.tmdb_id}`, target: "_blank", textContent: a.latin })),
+      el("td", { textContent: a.title }),
+      el("td", {}, el("div", { className: "actions" }, input, save, keep, msg)));
+  }));
+}
+
+const MIGRATION_RESULT = { different: "с разлики", unidentified: "неразпознат", error: "грешка" };
+
+function renderMigration() {
+  const m = data.migration;
+  const card = document.getElementById("migration-card");
+  card.hidden = !m || !m.libraries.length;
+  if (card.hidden) return;
+  const button = document.getElementById("migration-now");
+  button.disabled = m.running;
+  button.textContent = m.running ? "Върви…" : "Пусни сега";
+  document.getElementById("migration").textContent = m.running
+    ? `Минава ${m.current || "…"}` : "Чака; минава отново на всеки 6 часа и при нови библиотеки в MIGRATE_LIBRARIES.";
+  document.getElementById("migration-libraries").replaceChildren(...m.libraries.map(l => el("tr", {},
+    el("td", { textContent: l.name }), el("td", { textContent: l.done }), el("td", { textContent: l.different }),
+    el("td", { textContent: l.unidentified }), el("td", { textContent: l.error }))));
+  document.getElementById("migration-problems-box").hidden = !m.problems.length;
+  document.getElementById("migration-problems").replaceChildren(...m.problems.map(p => el("tr", {},
+    el("td", { textContent: p.library }), el("td", { textContent: p.path.split("/").pop() }),
+    el("td", { textContent: MIGRATION_RESULT[p.result] || p.result }), el("td", { textContent: p.detail }))));
+}
+
+document.getElementById("migration-now").onclick = async e => {
+  e.target.disabled = true;
+  await fetch("api/migrate/run", { method: "POST" });
+  setTimeout(refresh, 1000);
+};
+
+function renderPeople() {
+  const p = data.people || {};
+  const button = document.getElementById("people-now");
+  button.disabled = p.running;
+  button.textContent = p.running ? "Върви…" : "Обнови сега";
+  const counts = p.actors == null ? "" :
+    ` ${p.actors} актьора в NFO файловете, ${p.photos} със снимка, ${p.no_photo} без снимка в TMDB, ${p.unknown} непознати за TMDB.`;
+  document.getElementById("people").textContent = p.running ? "Обновява снимките…" :
+    p.finished ? `Последно обновени: ${fmtTime(p.finished)}.${counts} Обновяват се всяка седмица.` :
+    "Още не са обновявани.";
+}
+
+document.getElementById("people-now").onclick = async e => {
+  e.target.disabled = true;
+  await fetch("api/people/run", { method: "POST" });
+  setTimeout(refresh, 1000);
+};
 
 async function refresh() {
   try {
@@ -118,12 +275,15 @@ async function refresh() {
   }
   renderRun();
   renderTiles();
+  renderPeople();
+  renderMigration();
+  if (!document.getElementById("names").contains(document.activeElement)) renderNames();
   if (!document.getElementById("tbody").contains(document.activeElement)) renderTable();
 }
 
 const LOG_KIND = {
   moved: ["Подреден", "moved"], downloaded: ["Свален", "moved"], followed: ["Пренасочен", null], sorted: ["Сортиране", null],
-  confirmed: ["Потвърден", null], error: ["Грешка", "error"], rescan: ["Опресняване", null],
+  confirmed: ["Потвърден", null], people: ["Актьори", null], migrated: ["Миграция", null], userdata: ["Гледано", null], chosen: ["Избран", null], titled: ["Заглавие", null], error: ["Грешка", "error"], rescan: ["Опресняване", null],
 };
 
 const pollActivity = liveLog({

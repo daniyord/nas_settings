@@ -1,6 +1,7 @@
 """A series in a release folder (one with a season in its name, or any series folder that came from qBittorrent) is
 organized into <Title> (<Year>) [imdbid-tt...]/Season NN/SxxEyy - <Title>, or added to the series' folder when there
-is one, once every episode's SxxEyy matches Jellyfin's."""
+is one, once every episode's SxxEyy matches Jellyfin's. The series is looked up in TMDB, and its NFO and artwork and
+the episodes' are written before the move, so Jellyfin reads them at the new paths."""
 
 import collections
 import os
@@ -8,10 +9,12 @@ import time
 
 from common.jellyfin import jellyfin
 from common.media import EPISODE, ORGANIZED, SETTLE_AFTER, SUBTITLE, VIDEO_EXTS, Conflict, with_language
-from config import JELLYFIN_FILES, ORGANIZE_AFTER, SEASON_TOKEN
+from common.tmdb import NotFound
+from config import JELLYFIN_FILES, SEASON_TOKEN
+from metadata import as_item, identify, untitled, write_episode, write_season_posters, write_series
 from movies import make_dir, set_sort_name
 from names import doubt, episode_name, episode_numbers, id_tag, is_xml, owner, release_title, season_dir, target_name
-from state import db, event, lock, log, missing_since, ready_since, record, status, step
+from state import db, event, lock, log, missing_since, record, status, step
 
 
 def episode_plan(folder, stem, new_stem):
@@ -175,19 +178,39 @@ def organize_series(folder, episodes, target_dir, label):
     event(os.path.join(target_dir, "tvshow.nfo"), "moved", detail + ")", label)
 
 
+def write_metadata(folder, episodes, target_dir, details):
+    """The series' NFO and artwork (only for a new series folder: one that exists is the next stage's to migrate),
+    the posters of its seasons and the episodes' NFOs and stills, written before organize_series moves them along.
+    Jellyfin's names of the episodes give way to TMDB's, which organize_series names the files after."""
+    seasons = {e["ParentIndexNumber"] for e in episodes}
+    if os.path.exists(target_dir):
+        write_season_posters(target_dir, details, seasons, missing_only=True)
+    else:
+        write_series(folder, details, seasons)
+    for e in episodes:
+        season, first, last = episode_numbers(e)
+        title = write_episode(e["Path"], details, season, first, last)
+        if title:
+            e["Name"] = title
+
+
 def check_series(item, library, location, admin):
     """Looks at one series and organizes it when it's a release folder that's ready; returns when it wants to be
     looked at again."""
     folder = item["Path"].rstrip("/")
     name = os.path.basename(folder)
     label = f"{library['Name']}/{name}"
-    identified = bool(id_tag(item) and item.get("ProductionYear"))
-    nfo = is_xml(os.path.join(folder, "tvshow.nfo"))
 
     if ORGANIZED.fullmatch(name):
         with lock:
+            waiting = db.execute("SELECT 1 FROM untitled WHERE path = ?", (folder,)).fetchone()
+        if waiting:
+            detail = "TMDB няма заглавие на български: въведи го или остави оригиналното"
+            record(item, library["Name"], name, "review", detail, title=True)
+            return float("inf")
+        with lock:
             status.pop(item["Id"], None)
-        if identified and nfo:
+        if id_tag(item) and item.get("ProductionYear") and is_xml(os.path.join(folder, "tvshow.nfo")):
             set_sort_name(item, admin, label)
         return float("inf")
     if not SEASON_TOKEN.search(name):
@@ -215,9 +238,19 @@ def check_series(item, library, location, admin):
     if time.time() < settles:
         record(item, library["Name"], name, "pending", "файловете още се копират")
         return settles
-    if not identified:
-        detail = "Jellyfin не е разпознал сериала (или няма година): Identify в Jellyfin"
-        record(item, library["Name"], name, "unidentified", detail)
+    names = [release_title(name), release_title(os.path.basename(videos[0]))]
+    try:
+        details = identify("tv", folder, [name, *names])
+    except NotFound:
+        details = None
+    if not details:
+        detail = "TMDB не го намира: постави линк към сериала в TMDB или IMDb"
+        record(item, library["Name"], name, "unidentified", detail, choose=True)
+        return float("inf")
+    item = as_item(item, "tv", details)
+    if not item["ProductionYear"]:
+        detail = "в TMDB е без година: постави линк към друг сериал в TMDB или IMDb"
+        record(item, library["Name"], name, "unidentified", detail, choose=True)
         return float("inf")
     tag = id_tag(item)
     existing = [
@@ -233,9 +266,6 @@ def check_series(item, library, location, admin):
         return float("inf")
     target_dir = existing[0] if existing else os.path.join(location.rstrip("/"), target_name(item))
     target = os.path.basename(target_dir)
-    if not nfo:
-        record(item, library["Name"], name, "pending", "чака Jellyfin да запише NFO файла", target)
-        return float("inf")
     listed = jellyfin(
         "/Items", ParentId=item["Id"], Recursive="true", IncludeItemTypes="Episode", Fields="Path", Limit=100000
     )["Items"]
@@ -244,24 +274,21 @@ def check_series(item, library, location, admin):
     if problem:
         record(item, library["Name"], name, "review", problem, target)
         return float("inf")
-    if not all(is_xml(os.path.splitext(e["Path"])[0] + ".nfo") for e in episodes):
-        record(item, library["Name"], name, "pending", "чака Jellyfin да запише NFO файловете на епизодите", target)
-        return float("inf")
-    due = ready_since.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
-    if time.time() < due:
-        record(item, library["Name"], name, "pending", "изчаква Jellyfin да запише картинките", target)
-        return due
-    reason = doubt(item, [release_title(name), release_title(os.path.basename(videos[0]))])
+    reason = doubt(item, names)
     with lock:
         confirmed = db.execute("SELECT 1 FROM confirmed WHERE path = ? AND tag = ?", (item["Path"], tag)).fetchone()
     if reason and not confirmed:
-        detail = f"{reason}: провери match-а в Jellyfin и потвърди"
-        record(item, library["Name"], name, "review", detail, target, confirm=True)
+        detail = f"{reason}: провери в TMDB и потвърди, или постави линк към друг сериал"
+        record(item, library["Name"], name, "review", detail, target, confirm=True, choose=True)
         return float("inf")
     step(f"{label}: подрежда в {target}")
     try:
+        merge = os.path.exists(target_dir)
+        write_metadata(folder, episodes, target_dir, details)
         organize_series(folder, episodes, target_dir, label)
-    except (Conflict, OSError) as e:
+        if not merge:
+            untitled(target_dir, "tvshow", details)
+    except (Conflict, OSError, NotFound) as e:
         log(f"error {label}: {e}")
         record(item, library["Name"], name, "review", str(e), target)
         return float("inf")

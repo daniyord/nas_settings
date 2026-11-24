@@ -1,10 +1,11 @@
 // Shared by the status pages of media-ingest and media-subtitles: small helpers, the top bar linking the two
 // pages with what waits for the user on each, and the live log.
 
-// The services' own ports on the NAS (docker/media/docker-compose.yml)
+// The pages under media-web (docker/media/media-web/nginx.conf); summary: where the count of what waits comes from
 const SERVICES = [
-  { name: "Подреждане", port: 8098 },
-  { name: "Субтитри и аудио", port: 8099 },
+  { name: "Подреждане", url: "/ingest/", summary: "/ingest/api/summary" },
+  { name: "Актьори", url: "/ingest/people" },
+  { name: "Субтитри и аудио", url: "/subtitles/", summary: "/subtitles/api/summary" },
 ];
 
 const el = (tag, props = {}, ...children) => {
@@ -18,17 +19,18 @@ const swatch = key => {
   return s;
 };
 const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleString("bg-BG", { dateStyle: "short", timeStyle: "short" }) : "—";
-const serviceUrl = port => `${location.protocol}//${location.hostname}:${port}/`;
 
 async function renderBar() {
   const links = await Promise.all(SERVICES.map(async s => {
-    const here = location.port === String(s.port);
-    let waiting = null;
-    try {
-      waiting = (await (await fetch(serviceUrl(s.port) + "api/summary")).json()).waiting;
-    } catch (e) { }
+    const here = location.pathname === s.url;
+    let waiting = 0;
+    if (s.summary) {
+      try {
+        waiting = (await (await fetch(s.summary)).json()).waiting;
+      } catch (e) { waiting = null; }
+    }
     const link = el(here ? "span" : "a", { className: here ? "here" : "", textContent: s.name });
-    if (!here) link.href = serviceUrl(s.port);
+    if (!here) link.href = s.url;
     if (waiting === null) link.append(" ", el("span", { className: "count off", textContent: "?", title: "не отговаря" }));
     else if (waiting) link.append(" ", el("span", { className: "count", textContent: waiting, title: "чакат теб" }));
     return link;

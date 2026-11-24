@@ -35,22 +35,35 @@ def norm(text):
     return re.sub(r"[\W_]", "", text.lower().replace("&", "and"))
 
 
+def release_guesses(name):
+    """(title, year or None) a release name may mean: the title is whatever comes before a year, and with several
+    ("Blade Runner 2049 2017") each is tried."""
+    clean = re.sub(r"[._]+", " ", re.sub(r"\[[^\]]*\]", " ", name))
+    cuts = [(m.start(), int(m.group(1))) for m in re.finditer(r"(?<!\w)((?:19|20)\d{2})(?!\w)", clean)]
+    guesses = []
+    for at, found_year in cuts or [(len(clean), None)]:
+        title = clean[:at].strip(" -([")
+        if title:
+            guesses.append((title, found_year))
+    return guesses
+
+
+def similarity(title, item):
+    return max(
+        difflib.SequenceMatcher(None, norm(title), norm(t)).ratio()
+        for t in (item.get("OriginalTitle"), item.get("Name"))
+        if t
+    )
+
+
 def doubt(item, names):
-    """Why Jellyfin's match doesn't look like the release name(s), or "" when it does."""
+    """Why the match doesn't look like the release name(s), or "" when it does."""
     year = item.get("ProductionYear")
-    titles = [norm(t) for t in (item.get("OriginalTitle"), item.get("Name")) if t]
     best = None
     for name in names:
-        clean = re.sub(r"[._]+", " ", re.sub(r"\[[^\]]*\]", " ", name))
-        # The title is whatever comes before a year; with several ("Blade Runner 2049 2017") each is tried
-        cuts = [(m.start(), int(m.group(1))) for m in re.finditer(r"(?<!\w)((?:19|20)\d{2})(?!\w)", clean)]
-        for at, found_year in cuts or [(len(clean), None)]:
-            title = clean[:at].strip(" -([")
-            if not title:
-                continue
-            similarity = max(difflib.SequenceMatcher(None, norm(title), t).ratio() for t in titles)
+        for title, found_year in release_guesses(name):
             year_ok = not found_year or not year or abs(found_year - year) <= 1
-            score = (similarity >= MIN_SIMILARITY and year_ok, similarity)
+            score = (similarity(title, item) >= MIN_SIMILARITY and year_ok, similarity(title, item))
             if not best or score > best[0]:
                 best = (score, title, found_year)
     if not best or best[0][0]:

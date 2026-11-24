@@ -6,7 +6,7 @@ ON_LAN := $(shell timeout 2 bash -c '</dev/tcp/$(NAS_LAN_IP)/22' 2>/dev/null && 
 export DOCKER_HOST := ssh://$(if $(ON_LAN),nas-lan,nas)
 COMPOSE := docker compose --project-directory docker
 
-.PHONY: up hard down lint test
+.PHONY: up hard down lint test jellyfin-setup
 
 up:
 	$(COMPOSE) build
@@ -29,3 +29,9 @@ lint:
 # Each folder in its own pytest: the services' modules share names (app, config, state)
 test:
 	@set -e; for d in docker/*/*/tests; do uv run --frozen pytest -q $$d; done
+
+# Jellyfin's libraries as in docker/media/jellyfin-setup/libraries.toml: lists what differs; APPLY=1 makes it so
+JELLYFIN_URL ?= http://$(if $(ON_LAN),$(NAS_LAN_IP),100.105.180.2):8096
+jellyfin-setup:
+	@set -a; . docker/media/.env; set +a; JELLYFIN_URL=$(JELLYFIN_URL) \
+		uv run --frozen python docker/media/jellyfin-setup/setup.py $(if $(APPLY),--apply)

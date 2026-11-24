@@ -31,3 +31,22 @@ def jellyfin(path, method="GET", body=None, **params) -> Any:
 def library_locations(folders, names):
     """The folders of the named libraries, from Jellyfin's /Library/VirtualFolders listing."""
     return [location for name in names if name in folders for location in folders[name]["Locations"]]
+
+
+def reread(item_id, user_id):
+    """Makes Jellyfin read a changed NFO again: a locked item never does on its own, so it is unlocked and refreshed
+    in full; the NFO locks it again, and being locked keeps the online providers out (PLAN_media_services.md, 2.1).
+    Only safe with Jellyfin's NFO saver off, or the unlock would be written over the NFO. Its people are cleared
+    first: Jellyfin keeps the ones it has when the NFO names nobody (an animation, which gets no actors)."""
+    item = jellyfin(f"/Items/{item_id}", userId=user_id)
+    item["LockData"] = False
+    item["People"] = []
+    jellyfin(f"/Items/{item_id}", "POST", item)
+    jellyfin(
+        f"/Items/{item_id}/Refresh",
+        "POST",
+        MetadataRefreshMode="FullRefresh",
+        ImageRefreshMode="Default",
+        ReplaceAllMetadata="false",
+        ReplaceAllImages="false",
+    )

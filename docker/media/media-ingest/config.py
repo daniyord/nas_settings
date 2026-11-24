@@ -30,8 +30,12 @@ DOWNLOAD_DIRS = names(os.environ.get("DOWNLOAD_DIRS", ""))
 # while across two mounts (even of the same disk) it would be a copy
 VOLUME_PATHS = path_map(os.environ.get("VOLUME_PATHS", ""))
 
-# Jellyfin writes the NFO first and the artwork right after; moving in between would leave images behind
-ORGANIZE_AFTER = 120
+# One photo per actor, <tmdb-id>.jpg, at the same path inside Jellyfin; NFOs point to them. Missing: no photos
+PEOPLE_DIR = os.environ.get("PEOPLE_DIR", "/people")
+# As Jellyfin's own TMDB provider: the first actors only
+MAX_CAST = int(os.environ.get("MAX_CAST", "15"))
+# Libraries whose folders from before our NFOs are brought to them, in this order (PLAN_media_services.md, stage 3)
+MIGRATE_LIBRARIES = names(os.environ.get("MIGRATE_LIBRARIES", ""))
 STALE_RESCAN = 300
 MIN_SIMILARITY = 0.8
 # Where a release name stops being the series' name; series folders named by hand have none of it and are left alone

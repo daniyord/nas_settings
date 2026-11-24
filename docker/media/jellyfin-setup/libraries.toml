@@ -1,0 +1,462 @@
+# Jellyfin's libraries as they should be; `make jellyfin-setup` lists what differs on the server, and
+# `make jellyfin-setup APPLY=1` makes it so (setup.py). Settings are the names of Jellyfin's LibraryOptions
+# (GET /Library/VirtualFolders); one left out of a library is whatever Jellyfin has.
+#
+# Our NFOs are the source of the metadata (PLAN_media_services.md): Jellyfin writes neither NFOs nor artwork into the
+# folders (MetadataSavers = [], SaveLocalMetadata = false), except in the two libraries on ThePornDB until stage 4.
+# The online fetchers below are still on; stage 3 turns them off.
+
+# How NFOs are written, for the libraries that still have Jellyfin write them (GET /System/Configuration/xbmcmetadata)
+[nfo]
+ReleaseDateFormat = "yyyy-MM-dd"
+SaveImagePathsInNfo = false
+EnablePathSubstitution = true
+EnableExtraThumbsDuplication = false
+
+# Server-wide fetchers per item type (GET /System/Configuration, MetadataOptions); people's are reached only here.
+# Stage 3 turns TMDB off for people once every library reads only our NFOs.
+[metadata_options]
+
+# Plugins switched off (not uninstalled); a restart of Jellyfin makes it take effect
+[plugins]
+disabled = []
+
+# Which libraries each user sees ("all": every one, as an administrator); users are made by hand
+[users]
+adult = ["Порно - сцени", "Еротика", "Порно"]
+home = ["Collections", "Документални филми", "Филми", "Филми - български", "Филми - детски", "Филми - руски", "Сериали", "Сериали - български", "Сериали - детски"]
+root = "all"
+
+# The same in every library
+[options]
+AllowEmbeddedSubtitles = "AllowAll"
+AutomaticRefreshIntervalDays = 0
+AutomaticallyAddToCollection = false
+CustomTagDelimiters = ["/", "|", ";", "\\"]
+DelimiterWhitelist = []
+DisabledLocalMetadataReaders = []
+DisabledLyricFetchers = []
+DisabledMediaSegmentProviders = []
+DisabledSubtitleFetchers = []
+EnableChapterImageExtraction = false
+EnableEmbeddedEpisodeInfos = false
+EnableEmbeddedExtrasTitles = false
+EnableEmbeddedTitles = false
+EnableTrickplayImageExtraction = false
+Enabled = true
+ExtractChapterImagesDuringLibraryScan = false
+ExtractTrickplayImagesDuringLibraryScan = false
+LyricFetcherOrder = []
+MediaSegmentProviderOrder = []
+PreferNonstandardArtistsTag = false
+RequirePerfectSubtitleMatch = true
+SaveLyricsWithMedia = false
+SaveSubtitlesWithMedia = true
+SaveTrickplayWithMedia = false
+SeasonZeroDisplayName = "Specials"
+SkipSubtitlesIfEmbeddedSubtitlesPresent = false
+SubtitleFetcherOrder = []
+UseCustomTagDelimiters = false
+
+[[library]]
+name = "Филми"
+type = "movies"
+paths = ["/movies1/Films", "/movies2/Films", "/movies3/Films"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline since 2026-11-24, after its migration (stage 3): only the NFO and images in the folders, and frames of the
+# video when a folder has no poster
+[[library.options.TypeOptions]]
+Type = "Movie"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Филми - детски"
+type = "movies"
+paths = ["/movies1/Films_Kids", "/movies2/Films_Kids", "/movies3/Films_Kids"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline since 2026-11-24 (stage 3): only the NFO and images in the folders, and frames of the video when a
+# folder has no poster
+[[library.options.TypeOptions]]
+Type = "Movie"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Филми - български"
+type = "movies"
+paths = ["/movies1/Films_BG", "/movies2/Films_BG", "/movies3/Films_BG"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline since 2026-11-24 with „Филми - руски“ (stage 3): only the NFO and images in the folders, and frames of
+# the video when a folder has no poster
+[[library.options.TypeOptions]]
+Type = "Movie"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Филми - руски"
+type = "movies"
+paths = ["/movies1/Films_Russian", "/movies2/Films_Russian", "/movies3/Films_Russian"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = ""
+MetadataSavers = []
+PreferredMetadataLanguage = ""
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline since 2026-11-24, first of the libraries (stage 3): only the NFO and images in the folders, and frames of
+# the video when a folder has no poster
+[[library.options.TypeOptions]]
+Type = "Movie"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Документални филми"
+type = "homevideos"
+paths = ["/movies1/Documentary", "/movies2/Documentary"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = ""
+MetadataSavers = []
+PreferredMetadataLanguage = ""
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+[[library.options.TypeOptions]]
+Type = "Video"
+MetadataFetchers = []
+MetadataFetcherOrder = []
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Сериали"
+type = "tvshows"
+paths = ["/movies1/Serials", "/movies2/Serials", "/movies3/Serials"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline since 2026-11-24 (stage 3): only the NFO and images in the folders, and frames of the video for an
+# episode without a thumb
+[[library.options.TypeOptions]]
+Type = "Series"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Season"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Episode"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Сериали - детски"
+type = "tvshows"
+paths = ["/movies1/Serials_Kids", "/movies2/Serials_Kids", "/movies3/Serials_Kids"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline since 2026-11-24 (stage 3): only the NFO and images in the folders, and frames of the video for an
+# episode without a thumb
+[[library.options.TypeOptions]]
+Type = "Series"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Season"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Episode"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Сериали - български"
+type = "tvshows"
+paths = ["/movies1/Serials_BG", "/movies2/Serials_BG"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline since 2026-11-24 (stage 3): only the NFO and images in the folders, and frames of the video for an
+# episode without a thumb
+[[library.options.TypeOptions]]
+Type = "Series"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Season"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Episode"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Еротика"
+type = "movies"
+paths = ["/moviesadult/Erotic"]
+[library.options]
+EnableAutomaticSeriesGrouping = true
+EnableInternetProviders = false
+EnableLUFSScan = false
+EnablePhotos = true
+EnableRealtimeMonitor = true
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = true
+# Offline since 2026-11-24 (stage 3): only the NFO and images in the folders, and frames of the video when a
+# folder has no poster
+[[library.options.TypeOptions]]
+Type = "Movie"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Порно"
+type = "movies"
+paths = ["/moviesadult/Porn", "/moviesadult1/Porn"]
+[library.options]
+EnableAutomaticSeriesGrouping = true
+EnableInternetProviders = true
+EnableLUFSScan = false
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = ["Nfo"]
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = true
+SkipSubtitlesIfAudioTrackMatches = true
+SubtitleDownloadLanguages = []
+[[library.options.TypeOptions]]
+Type = "Movie"
+MetadataFetchers = ["ThePornDB Movies"]
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database", "ThePornDB JAV", "ThePornDB Scenes", "ThePornDB Movies"]
+ImageFetchers = ["ThePornDB", "Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "ThePornDB", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = ["TheMovieDb", "Local Genre/Tag"]
+
+[[library]]
+name = "Порно - сцени"
+type = "homevideos"
+paths = ["/moviesadult/PornScenes", "/moviesadult1/PornScenes"]
+[library.options]
+EnableAutomaticSeriesGrouping = true
+EnableInternetProviders = false
+EnableLUFSScan = false
+EnablePhotos = false
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = ""
+MetadataSavers = ["Nfo"]
+PreferredMetadataLanguage = ""
+SaveLocalMetadata = true
+SkipSubtitlesIfAudioTrackMatches = true
+SubtitleDownloadLanguages = []
+[[library.options.TypeOptions]]
+Type = "Video"
+MetadataFetchers = []
+MetadataFetcherOrder = []
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Movie"
+MetadataFetchers = []
+MetadataFetcherOrder = []
+ImageFetchers = []
+ImageFetcherOrder = []
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Collections"
+type = "boxsets"
+paths = ["/config/data/data/collections"]
+# Jellyfin makes it itself with the first collection
+create = false
+[library.options]
+EnableAutomaticSeriesGrouping = true
+EnableInternetProviders = false
+EnableLUFSScan = false
+EnablePhotos = true
+EnableRealtimeMonitor = false
+LocalMetadataReaderOrder = ["Emby Xml"]
+MetadataCountryCode = ""
+MetadataSavers = ["Emby Xml"]
+PreferredMetadataLanguage = ""
+SaveLocalMetadata = true
+SkipSubtitlesIfAudioTrackMatches = true
+SubtitleDownloadLanguages = []
+[[library.options.TypeOptions]]
+Type = "BoxSet"
+MetadataFetchers = ["TheMovieDb"]
+MetadataFetcherOrder = ["TheMovieDb"]
+ImageFetchers = ["TheMovieDb"]
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []

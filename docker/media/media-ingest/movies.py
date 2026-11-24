@@ -1,16 +1,17 @@
-"""A movie that isn't laid out like the rest (<Title> (<Year>) [imdbid-tt...]/<same name>.<ext>) is renamed after
-the match once Jellyfin has identified it and written its NFO: the folder, the video, the artwork and the subtitles,
-which also get a language when they have none. Every identified movie without one gets the Bulgarian ForcedSortName
-of the other movies. A match whose title or year doesn't look like the file's name waits for a confirmation."""
+"""A movie that isn't laid out like the rest (<Title> (<Year>) [imdbid-tt...]/<same name>.<ext>) is looked up in
+TMDB and renamed after the match: the folder, the video, the artwork and the subtitles, which also get a language when
+they have none. Its NFO and artwork from TMDB are in the folder before Jellyfin sees it at its new path. A match whose
+title or year doesn't look like the file's name waits for a confirmation, or for another TMDB title to be picked."""
 
 import os
 import time
 
 from common.jellyfin import jellyfin
 from common.media import ORGANIZED, SETTLE_AFTER, SUBTITLE, VIDEO_EXTS, Conflict, with_language
-from config import ORGANIZE_AFTER
+from common.tmdb import NotFound
+from metadata import as_item, clear_leftovers, identify, untitled, write_movie
 from names import bg_sort, doubt, foreign_rest, generic_name, id_tag, is_xml, locked, owner, padded, target_name
-from state import db, event, lock, log, missing_since, ready_since, record, status, step
+from state import db, event, lock, log, missing_since, record, status, step
 
 
 def make_dir(path, like):
@@ -64,7 +65,8 @@ def plan(folder, stem, target, own):
     return renames, deletions
 
 
-def ingest(item, parts, location, label):
+def ingest(item, parts, location, label, details):
+    """item: Jellyfin's, with TMDB's title, year and ids (metadata.as_item); details: TMDB's."""
     folder, filename = os.path.split(item["Path"])
     stem = os.path.splitext(filename)[0]
     target = target_name(item)
@@ -72,16 +74,19 @@ def ingest(item, parts, location, label):
     target_dir = os.path.join(location, target)
     if os.path.exists(target_dir) and target_dir != folder:
         raise Conflict(f"{target}/ вече съществува")
+    clear_leftovers(folder, stem, whole=own)
     renames, deletions = plan(folder, stem, target, own)
 
     if not own:
         make_dir(target_dir, location)
     for name in deletions:
         os.remove(os.path.join(folder, name))
+    write_movie(folder if own else target_dir, details, created=not own)
     for old, new in renames:
         os.rename(os.path.join(folder, old), os.path.join(folder if own else target_dir, new))
     if own and folder != target_dir:
         os.rename(folder, target_dir)
+    untitled(target_dir, "movie", details)
 
     new_path = os.path.join(target_dir, target + os.path.splitext(filename)[1])
     renamed_folder = own and folder != target_dir
@@ -116,10 +121,16 @@ def check(item, library, location, admin):
     label = f"{library['Name']}/{name}"
     folder = os.path.dirname(item["Path"])
     stem = os.path.splitext(parts[-1])[0]
-    identified = bool(id_tag(item) and item.get("ProductionYear"))
-    nfo = any(is_xml(os.path.join(folder, n)) for n in ("movie.nfo", stem + ".nfo"))
 
     if len(parts) == 2 and ORGANIZED.fullmatch(parts[0]) and (stem == parts[0] or stem.startswith(parts[0] + " - ")):
+        with lock:
+            waiting = db.execute("SELECT 1 FROM untitled WHERE path = ?", (folder,)).fetchone()
+        if waiting:
+            detail = "TMDB няма заглавие на български: въведи го или остави оригиналното"
+            record(item, library["Name"], name, "review", detail, title=True)
+            return float("inf")
+        identified = bool(id_tag(item) and item.get("ProductionYear"))
+        nfo = any(is_xml(os.path.join(folder, n)) for n in ("movie.nfo", stem + ".nfo"))
         if identified and nfo and ORGANIZED.fullmatch(item["Name"]):
             detail = "Jellyfin го показва с името на папката (TMDB няма заглавие на български): сложи заглавие в Jellyfin и го заключи"
             record(item, library["Name"], name, "review", detail)
@@ -139,14 +150,24 @@ def check(item, library, location, admin):
     if time.time() < settles:
         record(item, library["Name"], name, "pending", "файлът още се копира")
         return settles
-    if not identified and any(locked(os.path.join(folder, n)) for n in ("movie.nfo", stem + ".nfo")):
+    if any(locked(os.path.join(folder, n)) for n in ("movie.nfo", stem + ".nfo")):
         # Entered and locked by hand: a movie TMDB doesn't know stays where it is
         with lock:
             status.pop(item["Id"], None)
         return float("inf")
-    if not identified:
-        detail = "Jellyfin не е разпознал филма (или няма година): Identify в Jellyfin"
-        record(item, library["Name"], name, "unidentified", detail)
+    names = [parts[0], stem] if len(parts) == 2 else [stem]
+    try:
+        details = identify("movie", item["Path"], names)
+    except NotFound:
+        details = None
+    if not details:
+        detail = "TMDB не го намира: постави линк към филма в TMDB или IMDb"
+        record(item, library["Name"], name, "unidentified", detail, choose=True)
+        return float("inf")
+    item = as_item(item, "movie", details)
+    if not item["ProductionYear"]:
+        detail = "в TMDB е без година: постави линк към друг филм в TMDB или IMDb"
+        record(item, library["Name"], name, "unidentified", detail, choose=True)
         return float("inf")
     target = target_name(item)
     if len(parts) > 2:
@@ -155,26 +176,19 @@ def check(item, library, location, admin):
     if len(parts) == 2 and sum(os.path.splitext(n)[1].lower() in VIDEO_EXTS for n in os.listdir(folder)) > 1:
         record(item, library["Name"], name, "review", "в папката има няколко видеа: подреди ги на ръка", target)
         return float("inf")
-    if not nfo:
-        record(item, library["Name"], name, "pending", "чака Jellyfin да запише NFO файла", target)
-        return float("inf")
-    due = ready_since.setdefault(item["Id"], time.time()) + ORGANIZE_AFTER
-    if time.time() < due:
-        record(item, library["Name"], name, "pending", "изчаква Jellyfin да запише картинките", target)
-        return due
-    reason = doubt(item, [parts[0], stem] if len(parts) == 2 else [stem])
+    reason = doubt(item, names)
     with lock:
         confirmed = db.execute(
             "SELECT 1 FROM confirmed WHERE path = ? AND tag = ?", (item["Path"], id_tag(item))
         ).fetchone()
     if reason and not confirmed:
-        detail = f"{reason}: провери match-а в Jellyfin и потвърди"
-        record(item, library["Name"], name, "review", detail, target, confirm=True)
+        detail = f"{reason}: провери в TMDB и потвърди, или постави линк към друг филм"
+        record(item, library["Name"], name, "review", detail, target, confirm=True, choose=True)
         return float("inf")
     step(f"{label}: преименува на {target}")
     try:
-        ingest(item, parts, location, label)
-    except (Conflict, OSError) as e:
+        ingest(item, parts, location, label, details)
+    except (Conflict, OSError, NotFound) as e:
         log(f"error {label}: {e}")
         record(item, library["Name"], name, "review", str(e), target)
         return float("inf")

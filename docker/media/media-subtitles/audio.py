@@ -13,6 +13,8 @@ from common.media import Conflict
 from config import REMUX_EXTS
 from state import db, event, lock, log, refresh_video, subtitle_label
 
+# The folder's own record of the answer: {"audio": "bg" | "subs" | "burned"}
+MEDIA_FILE = ".media.json"
 DECISIONS = {
     "bg": "български дублаж",
     "subs": "трябват субтитри",
@@ -185,7 +187,15 @@ def tag_audio(folder, decision):
 
 def resume():
     """Goes on with the dub answers a restart cut short (rewriting a series as MKV takes hours); what is done is
-    skipped."""
+    skipped. Answers given before they were kept in the folders are written there first."""
+    with lock:
+        answers = db.execute("SELECT folder, decision FROM audio").fetchall()
+    for folder, decision in answers:
+        if os.path.isdir(folder) and read_decision(folder) != decision:
+            try:
+                write_decision(folder, decision)
+            except OSError as e:
+                log(f"error {folder}: {MEDIA_FILE} not written: {e}")
     with lock:
         folders = [r[0] for r in db.execute("SELECT folder FROM audio WHERE decision = 'bg' ORDER BY decided_at")]
     for folder in folders:
@@ -194,6 +204,55 @@ def resume():
                 still = db.execute("SELECT decision FROM audio WHERE folder = ?", (folder,)).fetchone()
             if still and still[0] == "bg":
                 tag_audio(folder, "bg")
+
+
+def read_decision(folder):
+    """The answer kept in the folder itself, so it outlives the database (PLAN_media_services.md, 2.3)."""
+    try:
+        with open(os.path.join(folder, MEDIA_FILE), encoding="utf-8") as f:
+            return json.load(f).get("audio")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def write_decision(folder, decision):
+    """Sets or (None) removes the answer in the folder's .media.json, keeping anything else in it."""
+    path = os.path.join(folder, MEDIA_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if decision:
+        data["audio"] = decision
+    else:
+        data.pop("audio", None)
+    if not data:
+        if os.path.exists(path):
+            os.remove(path)
+        return
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    parent = os.stat(folder)
+    os.chown(temporary, parent.st_uid, parent.st_gid)
+    os.chmod(temporary, 0o666)
+    os.replace(temporary, path)
+
+
+def restore(folders, decisions):
+    """Takes the answers kept in the folders into the database where it has none (a new or lost database)."""
+    for folder in folders:
+        if folder in decisions:
+            continue
+        decision = read_decision(folder)
+        if decision and decision in DECISIONS:
+            with lock:
+                db.execute(
+                    "INSERT OR IGNORE INTO audio (folder, decision, decided_at) VALUES (?, ?, ?)",
+                    (folder, decision, os.path.getmtime(os.path.join(folder, MEDIA_FILE))),
+                )
+            decisions[folder] = decision
 
 
 def answer(folder, decision, group):
@@ -205,6 +264,7 @@ def answer(folder, decision, group):
                    ON CONFLICT(folder) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at""",
                 (folder, decision, time.time()),
             )
+            write_decision(folder, decision)
         group["decision"] = decision
         event(folder, "audio", f"{group['title']}: {DECISIONS[decision]}", group["title"])
 
@@ -214,5 +274,6 @@ def answer(folder, decision, group):
             if not decision:
                 with lock:
                     db.execute("DELETE FROM audio WHERE folder = ?", (folder,))
+                write_decision(folder, None)
 
     threading.Thread(target=apply, daemon=True).start()

@@ -4,7 +4,8 @@
 #
 # Our NFOs are the source of the metadata (PLAN_media_services.md): Jellyfin writes neither NFOs nor artwork into the
 # folders (MetadataSavers = [], SaveLocalMetadata = false), except in the two libraries on ThePornDB until stage 4.
-# The online fetchers below are still on; stage 3 turns them off.
+# Every library reads only our NFOs and the images in its folders (stage 3, 2026-11-24), except „Порно“ and „Порно -
+# сцени“ on ThePornDB until stage 4.
 
 # How NFOs are written, for the libraries that still have Jellyfin write them (GET /System/Configuration/xbmcmetadata)
 [nfo]
@@ -14,12 +15,19 @@ EnablePathSubstitution = true
 EnableExtraThumbsDuplication = false
 
 # Server-wide fetchers per item type (GET /System/Configuration, MetadataOptions); people's are reached only here.
-# Stage 3 turns TMDB off for people once every library reads only our NFOs.
-[metadata_options]
+# People get only the photo our NFOs point to (PEOPLE_DIR of media-ingest), not TMDB's.
+[metadata_options.Person]
+DisabledMetadataFetchers = ["TheMovieDb"]
+DisabledImageFetchers = ["TheMovieDb"]
 
-# Plugins switched off (not uninstalled); a restart of Jellyfin makes it take effect
+# Plugins switched off (not uninstalled); a restart of Jellyfin makes it take effect. The bundled ones (TMDb, OMDb,
+# ...) can't be: OMDb is simply in no library's fetchers
 [plugins]
 disabled = []
+
+# Scheduled tasks that would go online on their own (by Key): left without triggers, still there to run by hand
+[tasks]
+disabled = ["RefreshPeople", "TmdbRefreshUpcomingEpisodes"]
 
 # Which libraries each user sees ("all": every one, as an administrator); users are made by hand
 [users]
@@ -451,11 +459,14 @@ PreferredMetadataLanguage = ""
 SaveLocalMetadata = true
 SkipSubtitlesIfAudioTrackMatches = true
 SubtitleDownloadLanguages = []
+# Offline since 2026-11-24: the collections' folders are /volume1/MediaMeta/Collections; media-ingest makes new
+# ones through the API with title, plot and artwork from TMDB, and keeps who is in which in the movies' NFOs
+# (boxsets.py)
 [[library.options.TypeOptions]]
 Type = "BoxSet"
-MetadataFetchers = ["TheMovieDb"]
+MetadataFetchers = []
 MetadataFetcherOrder = ["TheMovieDb"]
-ImageFetchers = ["TheMovieDb"]
+ImageFetchers = []
 ImageFetcherOrder = ["TheMovieDb"]
 ImageOptions = []
 SimilarItemProviders = []

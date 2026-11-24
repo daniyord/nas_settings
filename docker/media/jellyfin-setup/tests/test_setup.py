@@ -131,3 +131,33 @@ def test_server_options_and_plugins(monkeypatch):
     assert person["DisabledMetadataFetchers"] == ["TheMovieDb"] and posted[0][2]["Other"] == 1
     assert posted[1][0] == "/Plugins/o/1/Disable"
     assert setup.plan_server({}) == [] and setup.plan_plugins({"plugins": {"disabled": []}}) == []
+
+
+def test_tasks_lose_their_triggers(monkeypatch):
+    calls = []
+
+    def jellyfin(path, method="GET", body=None, **params):
+        calls.append((path, method, body))
+        if path == "/ScheduledTasks":
+            return [
+                {
+                    "Name": "Refresh People",
+                    "Id": "p",
+                    "Key": "RefreshPeople",
+                    "Triggers": [{"Type": "IntervalTrigger"}],
+                },
+                {
+                    "Name": "Scan Media Library",
+                    "Id": "s",
+                    "Key": "RefreshLibrary",
+                    "Triggers": [{"Type": "IntervalTrigger"}],
+                },
+                {"Name": "Upcoming", "Id": "u", "Key": "TmdbRefreshUpcomingEpisodes", "Triggers": []},
+            ]
+        return None
+
+    monkeypatch.setattr(setup, "jellyfin", jellyfin)
+    changes = setup.plan_tasks({"tasks": {"disabled": ["RefreshPeople", "TmdbRefreshUpcomingEpisodes"]}})
+    assert [t for t, _ in changes] == ["задача Refresh People: без автоматично пускане"]
+    changes[0][1]()
+    assert calls[-1] == ("/ScheduledTasks/p/Triggers", "POST", [])

@@ -171,6 +171,17 @@ def plan_plugins(config):
     return changes
 
 
+def plan_tasks(config):
+    """Scheduled tasks to keep from running on their own (by Key): their triggers are removed; they can still be
+    started by hand."""
+    changes = []
+    for task in jellyfin("/ScheduledTasks"):
+        if task.get("Key") in config.get("tasks", {}).get("disabled", []) and task.get("Triggers"):
+            path = f"/ScheduledTasks/{task['Id']}/Triggers"
+            changes.append((f"задача {task['Name']}: без автоматично пускане", lambda p=path: jellyfin(p, "POST", [])))
+    return changes
+
+
 def run(changes, apply):
     """Prints the changes (→ to make, · only a note) and makes them with apply; returns how many were to make."""
     for text, action in changes:
@@ -188,6 +199,7 @@ def main():
     config = load(args.config)
     folders = {f["Name"]: f for f in jellyfin("/Library/VirtualFolders")}
     changes = plan_libraries(config, folders) + plan_nfo(config) + plan_server(config) + plan_plugins(config)
+    changes += plan_tasks(config)
     pending = run(changes, args.apply)
     # Users after the libraries, as they name them
     if args.apply:

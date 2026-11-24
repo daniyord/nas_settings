@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS downloads (
     detail TEXT NOT NULL
 );
 -- What the user said about a movie's or series' folder whose sound names no language: bg (dubbed) or subs (wants
--- Bulgarian subtitles); tagged holds the MKV tracks then set to Bulgarian, [path, sound track position], to undo it by
+-- Bulgarian subtitles); tagged is no longer used: the tracks set to Bulgarian are kept in the folder's .media.json
 CREATE TABLE IF NOT EXISTS audio (
     folder TEXT PRIMARY KEY,
     decision TEXT NOT NULL,

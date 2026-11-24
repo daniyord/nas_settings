@@ -14,6 +14,7 @@ import time
 
 import pysubs2
 
+import media_json
 from common.media import ORGANIZED, SETTLE_AFTER, VIDEO_EXTS, Conflict, with_language
 from config import MAX_AUTO_OFFSET, MICRODVD, MIN_OFFSET, SAFE_SCALES, SYNC_EXTS, SYNC_TIMEOUT, SYNCED_DIR
 from state import db, event, lock, locations, log, not_fixed, refresh_video, series_locations, subtitle_label, sync_run
@@ -70,6 +71,14 @@ def pending_subtitles():
                     db.execute("UPDATE subtitles SET path = ?, video = ? WHERE path = ?", (subtitle, video, old))
                     if os.path.exists(synced_path(old)):
                         os.rename(synced_path(old), synced_path(subtitle))
+                    rows[subtitle] = (st.st_size, st.st_mtime)
+                elif media_json.was_dismissed(subtitle, st):
+                    # Left as it is on the status page before the database was lost
+                    db.execute(
+                        """INSERT INTO subtitles (path, video, size, mtime, checked_at, state, detail)
+                           VALUES (?, ?, ?, ?, ?, 'dismissed', ?)""",
+                        (subtitle, video, st.st_size, st.st_mtime, time.time(), "оставен така (.media.json)"),
+                    )
                     rows[subtitle] = (st.st_size, st.st_mtime)
             for path in (p for paths in gone.values() for p in paths):
                 db.execute("DELETE FROM subtitles WHERE path = ?", (path,))

@@ -10,11 +10,12 @@ import urllib.error
 
 from common.jellyfin import jellyfin
 from common.media import Conflict
+import media_json
 from config import REMUX_EXTS
 from state import db, event, lock, log, refresh_video, subtitle_label
 
-# The folder's own record of the answer: {"audio": "bg" | "subs" | "burned"}
-MEDIA_FILE = ".media.json"
+# The folder's own record of the answer (media_json): "bg" | "subs" | "burned"
+MEDIA_FILE = media_json.NAME
 DECISIONS = {
     "bg": "български дублаж",
     "subs": "трябват субтитри",
@@ -114,13 +115,11 @@ def tag_audio(folder, decision):
     """For a dub, sets the one sound track with no language in every video under folder to Bulgarian, so Jellyfin
     and players see it too: in place in an MKV, by rewriting the rest as MKV. Other answers put the MKV tracks set
     this way back to no language; a rewritten video stays MKV."""
-    with lock:
-        row = db.execute("SELECT tagged FROM audio WHERE folder = ?", (folder,)).fetchone()
-    done, changed, remuxed = json.loads(row["tagged"]) if row else [], [], 0
+    # Kept in the folder's .media.json, like the answer
+    done, changed, remuxed = media_json.read(folder).get("tagged", []), [], 0
 
     def save():
-        with lock:
-            db.execute("UPDATE audio SET tagged = ? WHERE folder = ?", (json.dumps(done), folder))
+        media_json.update(folder, tagged=done)
 
     if decision == "bg":
         for root, _, names in os.walk(folder):
@@ -208,36 +207,13 @@ def resume():
 
 def read_decision(folder):
     """The answer kept in the folder itself, so it outlives the database (PLAN_media_services.md, 2.3)."""
-    try:
-        with open(os.path.join(folder, MEDIA_FILE), encoding="utf-8") as f:
-            return json.load(f).get("audio")
-    except (OSError, ValueError, AttributeError):
-        return None
+    decision = media_json.read(folder).get("audio")
+    return decision if isinstance(decision, str) else None
 
 
 def write_decision(folder, decision):
     """Sets or (None) removes the answer in the folder's .media.json, keeping anything else in it."""
-    path = os.path.join(folder, MEDIA_FILE)
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        data = {}
-    if decision:
-        data["audio"] = decision
-    else:
-        data.pop("audio", None)
-    if not data:
-        if os.path.exists(path):
-            os.remove(path)
-        return
-    temporary = path + ".tmp"
-    with open(temporary, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    parent = os.stat(folder)
-    os.chown(temporary, parent.st_uid, parent.st_gid)
-    os.chmod(temporary, 0o666)
-    os.replace(temporary, path)
+    media_json.update(folder, audio=decision)
 
 
 def restore(folders, decisions):

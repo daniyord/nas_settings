@@ -12,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 
 import audio
+import media_json
 from common.media import Conflict
 from common.web import add_page
 from config import INTERVAL, PORT, WANTED_REFRESH
@@ -174,6 +175,7 @@ def dismiss_subtitle(sub_id: int):
         # A failed check too, when the user finds the subtitle fine
         row = subtitle_row(sub_id, "offset", "failed")
         db.execute("UPDATE subtitles SET state = 'dismissed' WHERE id = ?", (sub_id,))
+        media_json.remember_dismissed(row["path"])
         if os.path.exists(synced_path(row["path"])):
             os.remove(synced_path(row["path"]))
         event(
@@ -241,6 +243,7 @@ def audio_subtitles_ok(body: dict):
                 "UPDATE subtitles SET state = 'dismissed' WHERE path = ? AND state IN ('failed', 'offset')", (path,)
             ).rowcount
             if done:
+                media_json.remember_dismissed(path)
                 event(path, "dismissed", f"{os.path.basename(path)}: приети за наред", subtitle_label(path))
     # Off the question right away; the next listing leaves it out too
     downloads_run["review"].pop(group["folder"], None)

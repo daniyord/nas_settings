@@ -444,8 +444,9 @@ SimilarItemProviderOrder = []
 name = "Collections"
 type = "boxsets"
 paths = ["/config/data/data/collections"]
-# Jellyfin makes it itself with the first collection
-create = false
+# Made here too: Jellyfin makes it only with the first collection made through the API, so an empty Jellyfin
+# wouldn't read the folders, and then with its defaults, which find the collections online (wrong TMDB ids)
+create = true
 [library.options]
 EnableAutomaticSeriesGrouping = true
 EnableInternetProviders = false

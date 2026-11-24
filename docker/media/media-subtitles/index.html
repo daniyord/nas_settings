@@ -160,14 +160,15 @@ function renderDownloads() {
   }), "Още не е търсено.");
 }
 
-const AUDIO_DECISIONS = { bg: ["Български дублаж", "moved"], subs: ["Трябват субтитри", "review"] };
+const AUDIO_DECISIONS = { bg: ["Български дублаж", "moved"], subs: ["Трябват субтитри", "review"], burned: ["Субтитри в картината", "moved"] };
 
 function renderReview() {
   const groups = data.review || [];
   const open = groups.filter(g => !g.decision);
   document.getElementById("review-run").replaceChildren(
     `Видеа без български субтитри, чието аудио няма маркиран език. Без отговор: ${open.length} (${open.reduce((a, g) => a + g.videos, 0)} видеа)` +
-    ` · дублаж: ${groups.filter(g => g.decision === "bg").length} · субтитри: ${groups.filter(g => g.decision === "subs").length}`);
+    ` · дублаж: ${groups.filter(g => g.decision === "bg").length} · субтитри: ${groups.filter(g => g.decision === "subs").length}` +
+    ` · в картината: ${groups.filter(g => g.decision === "burned").length}`);
   const answer = (g, decision, label) => action("api/audio", { folder: g.folder, decision }, label);
   const row = g => {
     const cell = el("td", {});
@@ -175,10 +176,22 @@ function renderReview() {
       const [label, color] = AUDIO_DECISIONS[g.decision];
       cell.append(el("span", { className: "state" }, swatch(color), label),
         el("div", { style: "display:flex;gap:8px;margin-top:6px" },
-          answer(g, g.decision === "bg" ? "subs" : "bg", g.decision === "bg" ? "Трябват субтитри" : "Български дублаж"),
+          ...Object.entries(AUDIO_DECISIONS).filter(([d]) => d !== g.decision).map(([d, [label]]) => answer(g, d, label)),
           answer(g, null, "Отмени")));
+      if (g.search) {
+        const s = g.search, searched = (s.found || 0) + (s.none || 0) + (s.nomatch || 0) + (s.more || 0) + (s.failed || 0);
+        const parts = [["found", "намерени"], ["none", "няма в сайтовете"], ["nomatch", "не съвпадат"], ["more", "продължава"], ["failed", "грешка"]]
+          .filter(([k]) => s[k]).map(([k, label]) => `${label} ${s[k]}`);
+        cell.append(el("div", { className: "target", style: "margin-top:6px",
+          textContent: `Търсене: ${searched ? parts.join(", ") : "още не е започнало"} · ${s.wanted} видеа в опашката` }));
+      }
     } else {
-      cell.append(el("div", { style: "display:flex;gap:8px" }, answer(g, "bg", "Български дублаж"), answer(g, "subs", "Трябват субтитри")));
+      cell.append(el("div", { style: "display:flex;gap:8px" }, answer(g, "bg", "Български дублаж"), answer(g, "subs", "Трябват субтитри"),
+        answer(g, "burned", "Субтитрите са в картината")));
+      if (g.bad && g.bad.length) {
+        cell.append(el("div", { className: "target", style: "margin-top:6px", textContent: `Има български субтитри (${g.bad.length}), но проверката им не мина:` }),
+          el("div", { style: "display:flex;gap:8px;margin-top:4px" }, action("api/audio/subtitles-ok", { folder: g.folder }, "Субтитрите са наред")));
+      }
     }
     return el("tr", {},
       el("td", {}, el("div", {}, linked(`${g.title} (${g.year})`, g.item)), el("div", { className: "target", textContent: g.library })),
@@ -196,6 +209,13 @@ function renderHistory() {
     `${sub.filter(s => s.state !== "offset").length} субтитри · ${(data.review || []).filter(g => g.decision).length} отговора · ${dl.length} търсения`;
 }
 
+// The log brings lines every second while a check runs; the lists are big, so they follow at most every 10 s
+let refreshTimer = null;
+function soon() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => { refreshTimer = null; refresh(); renderBar(); }, 10000);
+}
+
 async function refresh() {
   const error = document.getElementById("error");
   try {
@@ -207,8 +227,7 @@ async function refresh() {
   }
   renderSubtitles();
   renderDownloads();
-  const focus = document.activeElement;
-  if (!["review", "review-history"].some(id => document.getElementById(id).contains(focus))) renderReview();
+  renderReview();
   renderHistory();
 }
 
@@ -231,7 +250,7 @@ liveLog({
       : ["Всички субтитри са проверени; чака нови."]));
     return Boolean(sync.current);
   },
-  onLines() { refresh(); renderBar(); },
+  onLines() { soon(); },
 });
 
 refresh();

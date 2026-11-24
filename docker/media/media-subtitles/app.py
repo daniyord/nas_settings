@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 import audio
 from common.media import Conflict
 from common.web import add_page
-from config import INTERVAL, PORT
+from config import INTERVAL, PORT, WANTED_REFRESH
 from download import download_step, wanted_subtitles
 from state import (
     activity,
@@ -75,6 +75,12 @@ def summary():
     return {"waiting": sum(not safe_to_fix(r["offset"], r["scale"]) for r in offsets) + unanswered}
 
 
+def relist_soon():
+    """The lists of videos wanting subtitles and of sound to ask about are made again a minute after the last answer:
+    listing every video takes Jellyfin a while, and answers come in runs. The page shows an answer right away."""
+    downloads_run["listed_at"] = time.time() - WANTED_REFRESH + 60
+
+
 app = FastAPI(title="media-subtitles")
 add_page(app, os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), summary)
 
@@ -111,6 +117,24 @@ def api_status():
         review = sorted(
             downloads_run["review"].values(), key=lambda g: (g["decision"] is not None, g["library"], g["title"])
         )
+        # How far the search for subtitles got in each folder answered with "needs subtitles"
+        review = [
+            {
+                **g,
+                "search": {
+                    "wanted": sum(w["video"].startswith(g["folder"] + "/") for w in downloads_run["wanted"]),
+                    **dict(
+                        db.execute(
+                            "SELECT state, COUNT(*) FROM downloads WHERE video LIKE ? ESCAPE '\\' GROUP BY state",
+                            (g["folder"].replace("%", r"\%").replace("_", r"\_") + "/%",),
+                        ).fetchall()
+                    ),
+                },
+            }
+            if g["decision"] == "subs"
+            else g
+            for g in review
+        ]
     return {
         "review": review,
         "subtitles": {"run": sync_run, "counts": counts, "items": subtitles},
@@ -156,7 +180,7 @@ def dismiss_subtitle(sub_id: int):
             row["path"], "dismissed", f"{os.path.basename(row['path'])}: {row['detail']}", subtitle_label(row["path"])
         )
     # Off the lists of videos wanting subtitles and of sound to ask about
-    downloads_run["listed_at"] = 0
+    relist_soon()
     return {"ok": True}
 
 
@@ -205,22 +229,42 @@ def restore_subtitle(sub_id: int):
     return {"ok": True}
 
 
+@app.post("/api/audio/subtitles-ok")
+def audio_subtitles_ok(body: dict):
+    # Only folders from the list, so no request names an arbitrary path
+    group = downloads_run["review"].get(body.get("folder"))
+    if not group or not group["bad"]:
+        raise HTTPException(404, "no subtitles to accept for this folder")
+    with lock:
+        for path in group["bad"]:
+            done = db.execute(
+                "UPDATE subtitles SET state = 'dismissed' WHERE path = ? AND state IN ('failed', 'offset')", (path,)
+            ).rowcount
+            if done:
+                event(path, "dismissed", f"{os.path.basename(path)}: приети за наред", subtitle_label(path))
+    # Off the question right away; the next listing leaves it out too
+    downloads_run["review"].pop(group["folder"], None)
+    relist_soon()
+    wake.set()
+    return {"ok": True}
+
+
 @app.post("/api/audio")
 def audio_decision(body: dict):
     folder, decision = body.get("folder"), body.get("decision")
-    if decision not in ("bg", "subs", None):
-        raise HTTPException(400, "decision is bg, subs or null")
+    if decision not in ("bg", "subs", "burned", None):
+        raise HTTPException(400, "decision is bg, subs, burned or null")
     # Only folders from the list, so no request names an arbitrary path
     group = downloads_run["review"].get(folder)
     if not group:
         raise HTTPException(404, "unknown folder")
     audio.answer(folder, decision, group)
-    # The list of videos to find subtitles for is made again on the next step
-    downloads_run["listed_at"] = 0
+    relist_soon()
     wake.set()
     return {"ok": True}
 
 
 if __name__ == "__main__":
     threading.Thread(target=subtitle_loop, daemon=True).start()
+    threading.Thread(target=audio.resume, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")

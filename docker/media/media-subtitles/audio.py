@@ -13,7 +13,12 @@ from common.media import Conflict
 from config import REMUX_EXTS
 from state import db, event, lock, log, refresh_video, subtitle_label
 
-DECISIONS = {"bg": "български дублаж", "subs": "трябват субтитри", None: "без отговор"}
+DECISIONS = {
+    "bg": "български дублаж",
+    "subs": "трябват субтитри",
+    "burned": "субтитрите са в картината",
+    None: "без отговор",
+}
 # One answer at a time, so quick changes of mind are applied in order
 tag_lock = threading.Lock()
 
@@ -60,7 +65,15 @@ def remux_bulgarian(path, position):
     and the MKV keeps the name, so subtitles, NFO and images next to it still go with it."""
     target = os.path.splitext(path)[0] + ".mkv"
     if os.path.exists(target):
-        raise Conflict(f"{os.path.basename(target)} already exists")
+        before, after = duration(path), duration(target)
+        # A restart between writing the MKV and removing the original
+        if not before or not after or abs(before - after) > 2:
+            raise Conflict(f"{os.path.basename(target)} already exists")
+        os.remove(path)
+        with lock:
+            db.execute("UPDATE subtitles SET video = ? WHERE video = ?", (target, path))
+            db.execute("DELETE FROM downloads WHERE video = ?", (path,))
+        return target
     probe = subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True, timeout=120)
     tracks = json.loads(probe.stdout or "{}").get("tracks", [])
     audio = [t["id"] for t in tracks if t["type"] == "audio"]
@@ -168,6 +181,19 @@ def tag_audio(folder, decision):
     if changed or remuxed:
         language = "bul" if decision == "bg" else "und"
         log(f"{language} audio: {len(changed)} MKV, {remuxed} rewritten as MKV in {os.path.basename(folder)}")
+
+
+def resume():
+    """Goes on with the dub answers a restart cut short (rewriting a series as MKV takes hours); what is done is
+    skipped."""
+    with lock:
+        folders = [r[0] for r in db.execute("SELECT folder FROM audio WHERE decision = 'bg' ORDER BY decided_at")]
+    for folder in folders:
+        with tag_lock:
+            with lock:
+                still = db.execute("SELECT decision FROM audio WHERE folder = ?", (folder,)).fetchone()
+            if still and still[0] == "bg":
+                tag_audio(folder, "bg")
 
 
 def answer(folder, decision, group):

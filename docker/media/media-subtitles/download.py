@@ -51,7 +51,7 @@ def bulgarian_files(video):
     return found
 
 
-def note_review(review, folder, library, match, decision, video, item):
+def note_review(review, folder, library, match, decision, video, item, bad_files=()):
     group = review.setdefault(
         folder,
         {
@@ -66,9 +66,12 @@ def note_review(review, folder, library, match, decision, video, item):
             "sample": os.path.basename(video),
             "audio": collections.Counter(),
             "added": "",
+            # Its videos' Bulgarian subtitles that failed their check, the reason they are asked about
+            "bad": [],
         },
     )
     group["videos"] += 1
+    group["bad"] += bad_files
     audio = [s for s in item.get("MediaStreams") or [] if s["Type"] == "Audio"]
     tracks = ", ".join(f"{s.get('Language') or 'und'} {s.get('Codec')} {s.get('Channels')}ch" for s in audio)
     group["audio"][tracks or "без звук"] += 1
@@ -115,6 +118,10 @@ def wanted_subtitles():
             folder = os.path.join(location.rstrip("/"), top)
             streams = item.get("MediaStreams") or []
             audio = [s for s in streams if s["Type"] == "Audio"]
+            # Jellyfin lists a new file (one just rewritten as MKV) before it reads its streams: it is looked at once
+            # they are in, as its sound may well be Bulgarian
+            if not audio:
+                continue
             # One sound track without a language is often a Bulgarian dub, kids' films most of all: the user says which.
             # Next to a Bulgarian track another one is the original, which is watched with subtitles
             single = (
@@ -124,6 +131,9 @@ def wanted_subtitles():
             )
             if folder in decisions:
                 note_review(review, folder, name, m, decisions[folder], video, item)
+            # Subtitles burned into the picture need none on the side
+            if decisions.get(folder) == "burned":
+                continue
             if single and (decisions.get(folder) == "bg" or re.search(r"bg[ ._-]?audio", video, re.I)):
                 continue
             if audio and all(bulgarian_stream(s) for s in audio):
@@ -134,7 +144,7 @@ def wanted_subtitles():
             if files and not set(files) <= bad:
                 continue
             if single and folder not in decisions:
-                note_review(review, folder, name, m, None, video, item)
+                note_review(review, folder, name, m, None, video, item, files)
                 continue
             fps = next(
                 (s.get("RealFrameRate") or s.get("AverageFrameRate") for s in streams if s["Type"] == "Video"), None

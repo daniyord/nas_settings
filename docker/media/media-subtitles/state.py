@@ -1,5 +1,6 @@
 """The service's database, log, the library folders and what it is doing."""
 
+import hashlib
 import os
 import threading
 import time
@@ -47,8 +48,14 @@ CREATE TABLE IF NOT EXISTS audio (
 );
 """,
 )
-# A failed check is retried after a restart, which is when the checker itself may have changed
-db.execute("DELETE FROM subtitles WHERE state = 'failed'")
+# A failed check is made again only once the code that checks has changed
+here = os.path.dirname(os.path.abspath(__file__))
+checker = hashlib.sha256(b"".join(open(os.path.join(here, n), "rb").read() for n in ("sync.py", "sync_check.py")))
+db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+checked_with = db.execute("SELECT value FROM meta WHERE key = 'checker'").fetchone()
+if not checked_with or checked_with[0] != checker.hexdigest():
+    db.execute("DELETE FROM subtitles WHERE state = 'failed'")
+    db.execute("INSERT OR REPLACE INTO meta VALUES ('checker', ?)", (checker.hexdigest(),))
 os.makedirs(SYNCED_DIR, exist_ok=True)
 os.makedirs(SUBTITLE_CACHE, exist_ok=True)
 activity = Activity(db, lock)

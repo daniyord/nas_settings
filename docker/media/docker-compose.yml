@@ -67,9 +67,9 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY:?set TMDB_API_KEY in docker/media/.env}
       LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
       # Release folders (a season in the name, or downloaded through qBittorrent) are organized; the rest are left alone
-      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
+      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български,Сериали - руски
       # Libraries whose folders from before our NFOs are brought to them (PLAN_media_services.md, stage 3); one at a time
-      MIGRATE_LIBRARIES: Филми - руски,Филми - български,Филми,Сериали - български,Филми - детски,Сериали - детски,Сериали,Еротика
+      MIGRATE_LIBRARIES: Филми - руски,Филми - български,Филми,Сериали - български,Филми - детски,Сериали - детски,Сериали,Еротика,Сериали - руски
       # A finished torrent whose category is one of LIBRARIES or SERIES_LIBRARIES is moved into it; the category is kept
       # pointed at whichever of DOWNLOAD_DIRS (qBittorrent's paths) has the most free space
       QBIT_URL: http://host.docker.internal:8888
@@ -107,7 +107,7 @@ services:
       JELLYFIN_URL: http://jellyfin:8096
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/media/.env}
       LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
-      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
+      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български,Сериали - руски
     volumes:
       - /volume1/ServerConfigurations/MediaSubtitles:/data
       # Same paths as inside jellyfin, so item paths can be used as is
@@ -145,7 +145,7 @@ services:
       LIBRARIES: Филми,Филми - детски,Филми - български,Филми - руски,Еротика
       # Release folders (a season in the name, or downloaded through qBittorrent) are organized; the rest only get
       # their subtitles checked
-      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български
+      SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български,Сериали - руски
       # A finished torrent whose category is one of LIBRARIES or SERIES_LIBRARIES is moved into it; the category is kept
       # pointed at whichever of DOWNLOAD_DIRS (qBittorrent's paths) has the most free space
       QBIT_URL: http://host.docker.internal:8888

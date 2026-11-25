@@ -16,7 +16,7 @@ Jellyfin (`/shared/nas_settings/docker`, `http://192.168.0.148:8096`) чете �
 | `Movies*/Films_Kids` | Филми - детски | movies |
 | `Movies*/Films_BG`, `Films_Russian` | Филми - български / руски | movies |
 | `Movies*/Documentary` | Документални филми | homevideos |
-| `Movies*/Serials`, `Serials_Kids`, `Serials_BG` | Сериали / детски / български | tvshows |
+| `Movies*/Serials`, `Serials_Kids`, `Serials_BG`, `Serials_Russian` | Сериали / детски / български / руски | tvshows |
 | `MoviesAdult/Erotic`, `Porn`, `PornScenes` | само за `adult` и `root` | |
 
 Едно заглавие стои само на един том (`Movies1`, `2` или `3`) — Jellyfin ги обединява в библиотеката, но дубликати на два тома се показват два пъти.

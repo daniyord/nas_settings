@@ -39,7 +39,7 @@ disabled = ["RefreshPeople", "TmdbRefreshUpcomingEpisodes"]
 # Which libraries each user sees ("all": every one, as an administrator); users are made by hand
 [users]
 adult = ["Порно - сцени", "Еротика", "Порно"]
-home = ["Collections", "Документални филми", "Филми", "Филми - български", "Филми - детски", "Филми - руски", "Сериали", "Сериали - български", "Сериали - детски"]
+home = ["Collections", "Документални филми", "Филми", "Филми - български", "Филми - детски", "Филми - руски", "Сериали", "Сериали - български", "Сериали - детски", "Сериали - руски"]
 root = "all"
 
 # The same in every library
@@ -330,6 +330,53 @@ SkipSubtitlesIfAudioTrackMatches = false
 SubtitleDownloadLanguages = []
 # Offline since 2026-11-24 (stage 3): only the NFO and images in the folders, and frames of the video for an
 # episode without a thumb
+[[library.options.TypeOptions]]
+Type = "Series"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = ["Local Genre/Tag"]
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Season"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb"]
+ImageFetchers = []
+ImageFetcherOrder = ["TheMovieDb"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+[[library.options.TypeOptions]]
+Type = "Episode"
+MetadataFetchers = []
+MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
+ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "Embedded Image Extractor", "Screen Grabber"]
+ImageOptions = []
+SimilarItemProviders = []
+SimilarItemProviderOrder = []
+
+[[library]]
+name = "Сериали - руски"
+type = "tvshows"
+paths = ["/movies1/Serials_Russian", "/movies2/Serials_Russian"]
+[library.options]
+EnableAutomaticSeriesGrouping = false
+EnableInternetProviders = false
+EnableLUFSScan = true
+EnablePhotos = true
+EnableRealtimeMonitor = true
+LocalMetadataReaderOrder = ["Nfo"]
+MetadataCountryCode = "BG"
+MetadataSavers = []
+PreferredMetadataLanguage = "bg"
+SaveLocalMetadata = false
+SkipSubtitlesIfAudioTrackMatches = false
+SubtitleDownloadLanguages = []
+# Offline from the start (2026-11-25), its series organized by hand into our NFOs: only the NFO and images in the
+# folders, and frames of the video for an episode without a thumb
 [[library.options.TypeOptions]]
 Type = "Series"
 MetadataFetchers = []

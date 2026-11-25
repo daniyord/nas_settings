@@ -135,6 +135,14 @@ def fake(monkeypatch, tmp_path):
 
     monkeypatch.setattr(tmdb, "episode", episode)
 
+    def episode_credits(i, s, e):
+        if e > 2:
+            raise tmdb.NotFound(e)
+        guests = [{"id": 2, "name": "Someone", "character": "Guest", "profile_path": "/guest.jpg"}] if e == 1 else []
+        return {"cast": [], "guest_stars": guests, "crew": []}
+
+    monkeypatch.setattr(tmdb, "episode_credits", episode_credits)
+
     def search(kind, query, year=None):
         searches.append((kind, query, year))
         if kind == "movie" and "ant" in query.lower():

@@ -107,7 +107,7 @@ def native_names(root, kind, d):
     cyrillic_title = d.get("original_language") in CYRILLIC_LANGUAGES
     title = d.get("title") or d.get("name")
     renames = {}
-    for person_id, name in list(latin.items())[:MAX_CAST]:
+    for person_id, name in list(latin.items())[: MAX_CAST or None]:
         chosen = actor_name(person_id, name, local.get(person_id), cyrillic_title, title)
         for spelling in (name, local.get(person_id)):
             if spelling and spelling != chosen:

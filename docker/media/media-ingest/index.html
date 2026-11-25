@@ -43,6 +43,29 @@
     </div>
   </section>
 
+  <section class="card" id="cast-card" hidden>
+    <h2>Всички актьори в NFO</h2>
+    <div class="runbar">
+      <p class="sub" id="cast">Зареждане…</p>
+      <button type="button" id="cast-now">Пусни сега</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Библиотека</th><th>Заглавия</th><th>Епизоди</th><th>Допълнени заглавия</th><th>Допълнени епизоди</th><th>Добавени актьори</th><th>Без TMDB</th><th>Грешки</th></tr></thead>
+        <tbody id="cast-libraries"></tbody>
+      </table>
+    </div>
+    <details id="cast-problems-box">
+      <summary>Грешки</summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Път</th><th>Грешка</th></tr></thead>
+          <tbody id="cast-problems"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
   <section class="card" id="migration-card" hidden>
     <h2>Старите папки към нашите NFO</h2>
     <div class="runbar">
@@ -242,6 +265,40 @@ function renderMigration() {
     el("td", { textContent: MIGRATION_RESULT[p.result] || p.result }), el("td", { textContent: p.detail }))));
 }
 
+function renderCast() {
+  const c = data.cast;
+  const card = document.getElementById("cast-card");
+  card.hidden = !c;
+  if (card.hidden) return;
+  const button = document.getElementById("cast-now");
+  button.disabled = c.running;
+  button.textContent = c.running ? "Върви…" : "Пусни сега";
+  const libs = c.libraries || [];
+  const total = key => libs.reduce((n, l) => n + (l[key] || 0), 0);
+  const known = libs.every(l => l.titles != null);
+  const share = (done, all) => all ? ` (${Math.floor(100 * done / all)}%)` : "";
+  document.getElementById("cast").textContent = c.running
+    ? `Минава ${c.current || "…"} — заглавия ${total("titles_done")}${known ? " от " + total("titles") : ""}, епизоди ${total("episodes_done")}${known ? " от " + total("episodes") + share(total("episodes_done"), total("episodes")) : ""}; добавени ${total("actors")} актьора.`
+    : c.finished ? `Последно минаване: ${fmtTime(c.finished)}; добавени ${total("actors")} актьора. Минава отново всяка седмица.`
+    : "Чака първото минаване.";
+  const of = (done, all) => all == null ? (done ? `${done}` : "—") : `${done} от ${all}`;
+  document.getElementById("cast-libraries").replaceChildren(...libs.map(l => el("tr", {},
+    el("td", { textContent: l.name }), el("td", { textContent: of(l.titles_done, l.titles) }),
+    el("td", { textContent: of(l.episodes_done, l.episodes) }), el("td", { textContent: l.changed }),
+    el("td", { textContent: l.episodes_changed }), el("td", { textContent: l.actors }),
+    el("td", { textContent: l.skipped }), el("td", { textContent: l.errors }))));
+  const problems = c.problems || [];
+  document.getElementById("cast-problems-box").hidden = !problems.length;
+  document.getElementById("cast-problems").replaceChildren(...problems.map(p => el("tr", {},
+    el("td", { textContent: p.path }), el("td", { textContent: p.detail }))));
+}
+
+document.getElementById("cast-now").onclick = async e => {
+  e.target.disabled = true;
+  await fetch("api/cast/run", { method: "POST" });
+  setTimeout(refresh, 1000);
+};
+
 document.getElementById("migration-now").onclick = async e => {
   e.target.disabled = true;
   await fetch("api/migrate/run", { method: "POST" });
@@ -276,6 +333,7 @@ async function refresh() {
   renderRun();
   renderTiles();
   renderPeople();
+  renderCast();
   renderMigration();
   if (!document.getElementById("names").contains(document.activeElement)) renderNames();
   if (!document.getElementById("tbody").contains(document.activeElement)) renderTable();
@@ -283,7 +341,7 @@ async function refresh() {
 
 const LOG_KIND = {
   moved: ["Подреден", "moved"], downloaded: ["Свален", "moved"], followed: ["Пренасочен", null], sorted: ["Сортиране", null],
-  confirmed: ["Потвърден", null], people: ["Актьори", null], boxsets: ["Колекции", null], migrated: ["Миграция", null], userdata: ["Гледано", null], chosen: ["Избран", null], titled: ["Заглавие", null], error: ["Грешка", "error"], rescan: ["Опресняване", null],
+  confirmed: ["Потвърден", null], people: ["Актьори", null], boxsets: ["Колекции", null], migrated: ["Миграция", null], cast: ["Актьори в NFO", null], userdata: ["Гледано", null], chosen: ["Избран", null], titled: ["Заглавие", null], error: ["Грешка", "error"], rescan: ["Опресняване", null],
 };
 
 const pollActivity = liveLog({

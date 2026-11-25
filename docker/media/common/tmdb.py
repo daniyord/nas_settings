@@ -147,6 +147,11 @@ def credits(kind, tmdb_id):
     return get(f"{kind}/{tmdb_id}/{'credits' if kind == 'movie' else 'aggregate_credits'}", language="en-US")
 
 
+def episode_credits(tmdb_id, season_number, number):
+    """An episode's cast and guest stars with their names in English, as credits() gives a title's."""
+    return get(f"tv/{tmdb_id}/season/{season_number}/episode/{number}/credits", language="en-US")
+
+
 def bulgarian_title(details):
     """The title TMDB has in Bulgarian, or None: with language=bg it falls back to the original title, so only the
     translations tell whether there is one."""

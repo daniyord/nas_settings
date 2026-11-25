@@ -145,6 +145,10 @@ def test_series_release_gets_nfos_that_move_with_the_episodes(fake, tmp_path):
     e1 = nfo.read(str(season / "S01E01 - Пилотен.nfo"))
     assert e1 is not None and e1.tag == "episodedetails" and e1.findtext("showtitle") == "Friends"
     assert e1.findtext("season") == "1" and e1.findtext("episode") == "1"
+    # The episode's guest stars, with their photo
+    guest = e1.find("actor")
+    assert guest is not None and guest.findtext("name") == "Someone" and guest.findtext("type") == "GuestStar"
+    assert guest.findtext("tmdbid") == "2" and (guest.findtext("thumb") or "").endswith("/2.jpg")
 
 
 def test_actor_name_is_cyrillic_only_for_people_born_where_it_is_written(fake):

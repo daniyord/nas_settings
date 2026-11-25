@@ -32,8 +32,9 @@ VOLUME_PATHS = path_map(os.environ.get("VOLUME_PATHS", ""))
 
 # One photo per actor, <tmdb-id>.jpg, at the same path inside Jellyfin; NFOs point to them. Missing: no photos
 PEOPLE_DIR = os.environ.get("PEOPLE_DIR", "/people")
-# As Jellyfin's own TMDB provider: the first actors only
-MAX_CAST = int(os.environ.get("MAX_CAST", "15"))
+# How many of a title's actors the NFOs name (0: all). TMDB lists 50-60 per film, most of them bit parts; the first ones,
+# as Jellyfin's own TMDB provider took. An episode's guest stars are all named
+MAX_CAST = int(os.environ.get("MAX_CAST", "20"))
 # The collections' folders (collection.xml and artwork), mounted where Jellyfin keeps them (boxsets.py)
 COLLECTIONS_DIR = os.environ.get("COLLECTIONS_DIR", "/collections")
 # Libraries whose folders from before our NFOs are brought to them, in this order (PLAN_media_services.md, stage 3)

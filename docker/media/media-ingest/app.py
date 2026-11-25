@@ -25,6 +25,9 @@ from names import bg_sort, id_tag, target_name
 from metadata import confirmed_names, names_file
 from people import catalog, catalog_loop, last_finished, names_loop, names_wake, people, people_loop
 from people import wake as people_wake
+from cast import cast_loop
+from cast import progress as cast_progress
+from cast import wake as cast_wake
 from migrate import migrate_loop
 from migrate import summary as migration
 from migrate import wake as migrate_wake
@@ -144,6 +147,7 @@ def api_status():
         "items": items,
         "people": {**people, "finished": last_finished()},
         "migration": migration(),
+        "cast": cast_progress,
         "actor_names": actor_names(),
     }
 
@@ -162,6 +166,12 @@ def run_now():
 @app.post("/api/migrate/run")
 def run_migration():
     migrate_wake.set()
+    return {"ok": True}
+
+
+@app.post("/api/cast/run")
+def run_cast():
+    cast_wake.set()
     return {"ok": True}
 
 
@@ -344,6 +354,7 @@ if __name__ == "__main__":
     threading.Thread(target=catalog_loop, daemon=True).start()
     threading.Thread(target=boxsets_loop, daemon=True).start()
     threading.Thread(target=migrate_loop, daemon=True).start()
+    threading.Thread(target=cast_loop, daemon=True).start()
     threading.Thread(target=export_loop, args=(log, event), daemon=True).start()
     if QBIT_URL:
         threading.Thread(target=download_loop, daemon=True).start()

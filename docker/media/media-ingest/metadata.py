@@ -310,34 +310,108 @@ def actor_name(tmdb_id, latin, local, cyrillic_title=False, title=None):
     return latin
 
 
-def _actors(kind, d):
-    """Actors named as actor_name says, with their Bulgarian roles where TMDB has them, their TMDB id and photo
-    (downloaded first: a person Jellyfin makes from the NFO takes its photo then or never)."""
+def cast(kind, d):
+    """(TMDB person with its Latin name, its name in TMDB's Bulgarian credits, role) of every actor of a title, in
+    TMDB's order; none for an animation."""
+    if animated(d):
+        return []
     credits = tmdb.credits(kind, d["id"])
     local = local_names(kind, d)
-    cyrillic_title = d.get("original_language") in CYRILLIC_LANGUAGES
-    title = d.get("title") or d.get("name")
     if kind == "movie":
         roles = {c["id"]: c.get("character") for c in d.get("credits", {}).get("cast", [])}
-        cast = [(c, c.get("character")) for c in credits.get("cast", [])]
+        entries = [(c, c.get("character")) for c in credits.get("cast", [])]
     else:
         roles = {
             c["id"]: (c.get("roles") or [{}])[0].get("character")
             for c in d.get("aggregate_credits", {}).get("cast", [])
         }
-        cast = [(c, (c.get("roles") or [{}])[0].get("character")) for c in credits.get("cast", [])]
-    elements = []
-    for order, (person, role) in enumerate([] if animated(d) else cast[:MAX_CAST]):
-        name = actor_name(person["id"], person["name"], local.get(person["id"]), cyrillic_title, title)
-        actor = E("actor", None, E("name", name))
-        if roles.get(person["id"]) or role:
-            actor.append(E("role", roles.get(person["id"]) or role))
-        actor.extend([E("type", "Actor"), E("order", order), E("tmdbid", person["id"])])
-        thumb = photo(person)
-        if thumb:
-            actor.append(E("thumb", thumb))
-        elements.append(actor)
-    crew = credits.get("crew", [])
+        entries = [(c, (c.get("roles") or [{}])[0].get("character")) for c in credits.get("cast", [])]
+    entries = entries[:MAX_CAST] if MAX_CAST else entries
+    return [(person, local.get(person["id"]), roles.get(person["id"]) or role) for person, role in entries]
+
+
+def guest_cast(d, season, first, last=None):
+    """The guest stars of an episode (of each one a file holds), as cast() gives a title's actors."""
+    if animated(d):
+        return []
+    found, seen = [], set()
+    for number in range(first, (last or first) + 1):
+        try:
+            latin = tmdb.episode_credits(d["id"], season, number)
+            local = {c["id"]: c["name"] for c in tmdb.episode(d["id"], season, number).get("guest_stars", [])}
+        except tmdb.NotFound:
+            continue
+        for person in latin.get("guest_stars", []):
+            if person["id"] not in seen:
+                seen.add(person["id"])
+                found.append((person, local.get(person["id"]), person.get("character")))
+    return found
+
+
+def name_in(d, person, local):
+    """The one name our NFOs give an actor of the title d (actor_name)."""
+    cyrillic_title = d.get("original_language") in CYRILLIC_LANGUAGES
+    return actor_name(person["id"], person["name"], local, cyrillic_title, d.get("title") or d.get("name"))
+
+
+def actor_element(person, name, role, order, kind="Actor"):
+    """An NFO <actor>, with the person's photo downloaded first: a person Jellyfin makes from the NFO takes its photo
+    then or never."""
+    actor = E("actor", None, E("name", name))
+    if role:
+        actor.append(E("role", role))
+    actor.extend([E("type", kind), E("order", order), E("tmdbid", person["id"])])
+    thumb = photo(person)
+    if thumb:
+        actor.append(E("thumb", thumb))
+    return actor
+
+
+def actor_elements(d, entries, kind="Actor"):
+    return [
+        actor_element(person, name_in(d, person, local), role, order, kind)
+        for order, (person, local, role) in enumerate(entries)
+    ]
+
+
+def merge_cast(root, d, entries, kind="Actor"):
+    """Adds to an NFO the actors of entries (as cast() gives them for the title d) it doesn't name yet, after the ones
+    it has. One it names without a TMDB id (as Jellyfin wrote them), under any of the person's spellings, gets the
+    id, our name and the photo; the rest of what it has stays. Returns how many actors were added or completed."""
+    actors = root.findall("actor")
+    ids = {(a.findtext("tmdbid") or "").strip() for a in actors}
+    unnamed = {
+        (a.findtext("name") or "").strip().casefold(): a for a in actors if not (a.findtext("tmdbid") or "").strip()
+    }
+    orders = [int(o) for a in actors for o in [(a.findtext("order") or "").strip()] if o.isdigit()]
+    order = max(orders, default=-1) + 1
+    changed = 0
+    for person, local, role in entries:
+        if str(person["id"]) in ids:
+            continue
+        ids.add(str(person["id"]))
+        name = name_in(d, person, local)
+        spellings = [s.casefold() for s in (name, person["name"], local) if s]
+        match = next((unnamed.pop(s) for s in spellings if s in unnamed), None)
+        if match is None:
+            root.append(actor_element(person, name, role, order, kind))
+            order += 1
+        else:
+            name_element = match.find("name")
+            if name_element is not None:
+                name_element.text = name
+            match.append(E("tmdbid", person["id"]))
+            thumb = photo(person)
+            if thumb and match.find("thumb") is None:
+                match.append(E("thumb", thumb))
+        changed += 1
+    return changed
+
+
+def _actors(kind, d):
+    """The actors (cast()), director and writers of a title as NFO elements."""
+    elements = actor_elements(d, cast(kind, d))
+    crew = tmdb.credits(kind, d["id"]).get("crew", [])
     for person in crew:
         if person.get("job") == "Director":
             elements.append(E("director", person["name"]))
@@ -514,5 +588,6 @@ def write_episode(video, d, season, first, last=None):
     still = tmdb.pick_image(e.get("images", {}).get("stills", [])) or e.get("still_path")
     save_image(still, os.path.join(folder, f"{stem}-thumb.jpg"))
     show_title = tmdb.bulgarian_title(d) or d.get("name")
-    save_nfo("episode", video, episode_nfo(e, show_title, last))
+    guests = actor_elements(d, guest_cast(d, season, first, last), "GuestStar")
+    save_nfo("episode", video, episode_nfo(e, show_title, last) + guests)
     return episode_title(e)

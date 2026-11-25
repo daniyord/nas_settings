@@ -28,7 +28,7 @@ from people import wake as people_wake
 from migrate import migrate_loop
 from migrate import summary as migration
 from migrate import wake as migrate_wake
-from series import check_series
+from series import check_series, reread_new_episodes
 from userdata import export_loop
 from state import activity, db, event, last_rescan, last_run, lock, log, missing_since, status, step, wake
 
@@ -89,6 +89,10 @@ def run_once():
                 next_wake = min(next_wake, check_series(item, library, location, admin))
             except (urllib.error.URLError, TimeoutError) as e:
                 log(f"error {name}/{item['Name']}: {e!r}; tried again on the next run")
+        try:
+            reread_new_episodes(library, admin)
+        except (urllib.error.URLError, TimeoutError) as e:
+            log(f"error {name} new episodes: {e!r}; tried again on the next run")
 
     with lock:
         for gone in set(status) - seen:

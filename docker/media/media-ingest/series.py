@@ -6,8 +6,11 @@ the episodes' are written before the move, so Jellyfin reads them at the new pat
 import collections
 import os
 import time
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
-from common.jellyfin import jellyfin
+from common import nfo
+from common.jellyfin import jellyfin, reread
 from common.media import EPISODE, ORGANIZED, SETTLE_AFTER, SUBTITLE, VIDEO_EXTS, Conflict, with_language
 from common.tmdb import NotFound
 from config import JELLYFIN_FILES, SEASON_TOKEN
@@ -294,3 +297,41 @@ def check_series(item, library, location, admin):
         return float("inf")
     record(item, library["Name"], name, "pending", "подреден, чака Jellyfin да види новата папка", target)
     return time.time() + 60
+
+
+# Jellyfin locks a new episode of a locked series without reading its NFO (its name stays the file's), so the ones
+# added lately are read once more when their name isn't the NFO's; once each, in case Jellyfin keeps its own
+NEW_EPISODES = 2 * 24 * 3600
+reread_tried = set()
+
+
+def reread_new_episodes(library, admin):
+    """Returns how many episodes of the library were read again."""
+    episodes = jellyfin(
+        "/Items",
+        ParentId=library["ItemId"],
+        Recursive="true",
+        IncludeItemTypes="Episode",
+        Fields="Path,DateCreated",
+        SortBy="DateCreated",
+        SortOrder="Descending",
+        Limit=500,
+    )["Items"]
+    done = 0
+    for e in episodes:
+        created = datetime.fromisoformat(e["DateCreated"][:19]).replace(tzinfo=timezone.utc).timestamp()
+        if time.time() - created > NEW_EPISODES:
+            break
+        if e["Id"] in reread_tried or not e.get("Path"):
+            continue
+        try:
+            root = nfo.read(os.path.splitext(e["Path"])[0] + ".nfo")
+        except (ET.ParseError, UnicodeDecodeError, OSError):
+            continue
+        title = (root.findtext("title") or "").strip() if root is not None else ""
+        if title and title != e["Name"]:
+            reread_tried.add(e["Id"])
+            reread(e["Id"], admin["Id"])
+            log(f"reread {e['Path']}: {e['Name']} → {title}")
+            done += 1
+    return done

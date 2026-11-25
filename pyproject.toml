@@ -33,13 +33,11 @@ select = ["E4", "E7", "E9", "F", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 # Single-letter names and re-raised HTTP errors in the code from before the linters; dropped as it is rewritten
-"docker/media/jellyfin-movie-ingest/*.py" = ["E741", "B904"]
 "docker/media/jellyfin-tpdb-match/*.py" = ["E741", "B904"]
 
 [tool.ruff.format]
 # Not formatted yet; each is dropped from here when it is rewritten
 exclude = [
-    "docker/media/jellyfin-movie-ingest/*.py",
     "docker/media/jellyfin-tpdb-match/*.py",
 ]
 
@@ -52,7 +50,6 @@ executionEnvironments = [
     { root = "docker/media/media-subtitles", extraPaths = ["docker/media"] },
     { root = "docker/media/common", extraPaths = ["docker/media"] },
     { root = "docker/media/jellyfin-setup", extraPaths = ["docker/media"] },
-    { root = "docker/media/jellyfin-movie-ingest" },
     { root = "docker/media/jellyfin-tpdb-match" },
 ]
 exclude = [".venv"]

@@ -136,8 +136,9 @@
 - [x] Двете страници и лентата изглеждат наред в браузър.
 - [ ] Проверка на живо: един нов филм и един сериал минават през qBittorrent → библиотеката, субтитрите им се проверяват.
 - [x] `docs/SETUP_docker.md` и `docs/PLAN_jellyfin_library.md`: двете услуги вместо `jellyfin-movie-ingest`.
-- [ ] След няколко дни без проблеми: `jellyfin-movie-ingest` се маха от compose, папката му от repo-то, а
-  `/volume1/ServerConfigurations/JellyfinMovieIngest` от NAS-а (с потвърждение).
+- [x] След няколко дни без проблеми (2026-11-25): `jellyfin-movie-ingest` е махнат от compose, папката му от repo-то, а
+  `/volume1/ServerConfigurations/JellyfinMovieIngest`, контейнерът и образът му от NAS-а. `MediaIngest/collections-orig`
+  (старите колекции на Jellyfin) остава до етап 4: седемте колекции на порно студиата (Vivid, Penthouse, …) са само там.
 
 ## Етап 2: наши NFO и картинки, Jellyfin като код, експорт на гледаното
 

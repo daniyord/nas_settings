@@ -14,6 +14,13 @@ SaveImagePathsInNfo = false
 EnablePathSubstitution = true
 EnableExtraThumbsDuplication = false
 
+# The server's own settings (GET /System/Configuration). Its language also names what Jellyfin names itself, such as a
+# season with no title of its own ("Сезон 1", "Специални"), when the item is made
+[server]
+UICulture = "bg-BG"
+PreferredMetadataLanguage = "bg"
+MetadataCountryCode = "BG"
+
 # Server-wide fetchers per item type (GET /System/Configuration, MetadataOptions); people's are reached only here.
 # People get only the photo our NFOs point to (PEOPLE_DIR of media-ingest), not TMDB's.
 [metadata_options.Person]
@@ -61,7 +68,8 @@ RequirePerfectSubtitleMatch = true
 SaveLyricsWithMedia = false
 SaveSubtitlesWithMedia = true
 SaveTrickplayWithMedia = false
-SeasonZeroDisplayName = "Specials"
+# As our season.nfo titles name it; the others are "Сезон N" there (Jellyfin's Bulgarian leaves them "Season N")
+SeasonZeroDisplayName = "Специални"
 SkipSubtitlesIfEmbeddedSubtitlesPresent = false
 SubtitleFetcherOrder = []
 UseCustomTagDelimiters = false

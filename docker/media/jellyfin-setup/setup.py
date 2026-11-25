@@ -129,13 +129,19 @@ def plan_nfo(config):
 
 
 def plan_server(config):
-    """The server-wide fetchers per item type (people's above all, which no library setting reaches)."""
-    wanted = config.get("metadata_options", {})
-    if not wanted:
+    """The server's own settings ([server]) and its fetchers per item type (people's above all, which no library
+    setting reaches)."""
+    settings, wanted = config.get("server", {}), config.get("metadata_options", {})
+    if not settings and not wanted:
         return []
     have = jellyfin("/System/Configuration")
-    options = {o["ItemType"]: o for o in have.get("MetadataOptions", [])}
     changes, updated = [], False
+    for key, value in settings.items():
+        if have.get(key) != value:
+            changes.append((f"сървър: {key} {short(have.get(key))} → {short(value)}", None))
+            have[key] = value
+            updated = True
+    options = {o["ItemType"]: o for o in have.get("MetadataOptions", [])}
     for item_type, values in wanted.items():
         current = options.get(item_type)
         if current is None:

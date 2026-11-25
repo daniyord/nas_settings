@@ -102,7 +102,11 @@ def test_description_in_the_repo_is_complete():
 
 def test_server_options_and_plugins(monkeypatch):
     calls = []
-    server = {"MetadataOptions": [{"ItemType": "Movie", "DisabledMetadataFetchers": []}], "Other": 1}
+    server = {
+        "MetadataOptions": [{"ItemType": "Movie", "DisabledMetadataFetchers": []}],
+        "Other": 1,
+        "UICulture": "en-US",
+    }
 
     def jellyfin(path, method="GET", body=None, **params):
         calls.append((path, method, body))
@@ -117,6 +121,7 @@ def test_server_options_and_plugins(monkeypatch):
 
     monkeypatch.setattr(setup, "jellyfin", jellyfin)
     config = {
+        "server": {"UICulture": "bg-BG"},
         "metadata_options": {"Person": {"DisabledMetadataFetchers": ["TheMovieDb"]}},
         "plugins": {"disabled": ["OMDb"]},
     }
@@ -129,6 +134,7 @@ def test_server_options_and_plugins(monkeypatch):
     assert posted[0][0] == "/System/Configuration"
     person = next(o for o in posted[0][2]["MetadataOptions"] if o["ItemType"] == "Person")
     assert person["DisabledMetadataFetchers"] == ["TheMovieDb"] and posted[0][2]["Other"] == 1
+    assert posted[0][2]["UICulture"] == "bg-BG" and changes[0][0] == 'сървър: UICulture "en-US" → "bg-BG"'
     assert posted[1][0] == "/Plugins/o/1/Disable"
     assert setup.plan_server({}) == [] and setup.plan_plugins({"plugins": {"disabled": []}}) == []
 

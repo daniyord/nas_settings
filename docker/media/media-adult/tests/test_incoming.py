@@ -17,6 +17,11 @@ def setup(tmp_path, monkeypatch):
         lambda name=incoming.LIBRARY: [str(scenes if name == incoming.SCENES_LIBRARY else library)],
     )
     monkeypatch.setattr(incoming, "jellyfin", lambda path, method="GET", body=None, **params: updates.append(body))
+    monkeypatch.setattr(
+        incoming,
+        "announce",
+        lambda paths, rescan=False: updates.append({"Updates": [{"Path": p, "UpdateType": "Created"} for p in paths]}),
+    )
     monkeypatch.setattr(incoming, "event", lambda *a: None)
     monkeypatch.setattr(incoming.metadata, "own", lambda path, like: None)
     written = []
@@ -134,3 +139,39 @@ def test_a_scene_download_goes_under_its_studio_with_each_video_a_scene(tmp_path
     assert incoming.row(row_id)["state"] == "duplicate" and single.exists()
     incoming.place_scene(row_id, "Brazzers", "Angel Tits (Jessa Rhodes)")
     assert (studio / "Angel Tits (Jessa Rhodes).mp4").exists()
+
+
+def test_a_download_in_a_studio_folder_is_searched_there_and_placed_under_it(tmp_path, monkeypatch):
+    library, downloads, _, _ = setup(tmp_path, monkeypatch)
+    (library / "Vivid").mkdir()
+    monkeypatch.setattr(incoming, "SETTLE_AFTER", -1)
+    monkeypatch.setattr(incoming, "downloads", [str(downloads)])
+    release = downloads / "Vivid" / "Cry.Wolf.XXX.DVDRip"
+    release.mkdir(parents=True)
+    (release / "cry.wolf.avi").write_bytes(b"x")
+    loose = downloads / "Something.Else.avi"
+    loose.write_bytes(b"x")
+    with incoming.lock:
+        incoming.db.execute("DELETE FROM incoming")
+
+    incoming.scan([])
+
+    with incoming.lock:
+        rows = {r["path"]: r["studio"] for r in incoming.db.execute("SELECT path, studio FROM incoming")}
+    assert rows == {str(release): "Vivid", str(loose): None}
+
+    searched, placed = [], []
+    monkeypatch.setattr(incoming.match, "site_names", lambda studio: ["Vivid", "Vivid Premium"])
+
+    def search(title, year, minutes, words, sites=None):
+        searched.append(sites)
+        return {"id": "b241"}, None, []
+
+    monkeypatch.setattr(incoming.match, "search_tpdb", search)
+    monkeypatch.setattr(incoming, "runtime", lambda video: 90)
+    monkeypatch.setattr(incoming, "place", lambda row_id, pin, studio: placed.append((pin, studio)))
+    with incoming.lock:
+        row_id = incoming.db.execute("SELECT id FROM incoming WHERE studio = 'Vivid'").fetchone()[0]
+    incoming.identify(incoming.row(row_id))
+    assert searched == [["Vivid", "Vivid Premium"]]
+    assert placed == [(("tpdb", "b241"), "Vivid")]

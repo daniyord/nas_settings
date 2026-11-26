@@ -28,6 +28,23 @@ def jellyfin(path, method="GET", body=None, **params) -> Any:
     return json.loads(raw) if raw else None
 
 
+def is_empty(folder):
+    """Whether a folder has nothing in it but hidden entries."""
+    try:
+        return not any(not name.startswith(".") for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def announce(paths, rescan=False):
+    """Tells Jellyfin of new paths in its libraries. rescan: one went into a library folder that was empty, which
+    Jellyfin doesn't watch when it starts with it so; what comes into it then isn't seen, announced or not, until a
+    scan of all libraries (about half a minute), which also starts watching it."""
+    jellyfin("/Library/Media/Updated", "POST", {"Updates": [{"Path": p, "UpdateType": "Created"} for p in paths]})
+    if rescan:
+        jellyfin("/Library/Refresh", "POST")
+
+
 def library_locations(folders, names):
     """The folders of the named libraries, from Jellyfin's /Library/VirtualFolders listing."""
     return [location for name in names if name in folders for location in folders[name]["Locations"]]

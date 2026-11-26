@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS incoming (
     path TEXT NOT NULL UNIQUE,
     -- movie, or scene: a scene isn't looked up, it waits on the status page for its studio
     kind TEXT NOT NULL DEFAULT 'movie',
+    -- The studio folder of the download folder it came in (Downloads/<Studio>/...): searched there, placed under it
+    studio TEXT,
     video TEXT,
     state TEXT NOT NULL,
     title TEXT,
@@ -33,9 +35,12 @@ CREATE TABLE IF NOT EXISTS incoming (
 );
 """,
 )
-# The column came with the scenes
-if "kind" not in {r["name"] for r in db.execute("PRAGMA table_info(incoming)")}:
+# Columns added since the table was made
+columns = {r["name"] for r in db.execute("PRAGMA table_info(incoming)")}
+if "kind" not in columns:
     db.execute("ALTER TABLE incoming ADD COLUMN kind TEXT NOT NULL DEFAULT 'movie'")
+if "studio" not in columns:
+    db.execute("ALTER TABLE incoming ADD COLUMN studio TEXT")
 activity = Activity(db, lock)
 log, event = activity.log, activity.event
 

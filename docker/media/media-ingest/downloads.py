@@ -7,7 +7,7 @@ import os
 import shutil
 import time
 
-from common.jellyfin import jellyfin
+from common.jellyfin import announce, is_empty, jellyfin
 from common.media import ORGANIZED
 from common.qbit import qbit, translate
 from config import (
@@ -84,6 +84,7 @@ def import_downloads(folders, torrents):
             name = os.path.basename(src.rstrip("/"))
             if os.path.lexists(os.path.join(folder, name)):
                 raise OSError(f"{name} вече е в {location}")
+            was_empty = is_empty(folder)
             os.rename(src, os.path.join(folder, name))
         except OSError as e:
             failed_downloads.add(key)
@@ -91,7 +92,7 @@ def import_downloads(folders, torrents):
             continue
         qbit("torrents/delete", hashes=key, deleteFiles="false")
         path = os.path.join(location, name)
-        jellyfin("/Library/Media/Updated", "POST", {"Updates": [{"Path": path, "UpdateType": "Created"}]})
+        announce([path], rescan=was_empty)
         event(path, "downloaded", f"{torrent['content_path']} → {path}", label)
         wake.set()
 

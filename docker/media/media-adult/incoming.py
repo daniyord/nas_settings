@@ -2,7 +2,9 @@
 or anything copied into a download folder by hand. qBittorrent lets go of the torrent and the download stays where
 it is, out of Jellyfin's sight, until it is known which movie it is: then its folder is made in the library on the
 same disk, under its studio, with our NFO and artwork, and the video moves in (a rename). What can't be matched with
-confidence waits on the status page. A scene (the category SCENES_CATEGORY, in the download folder's SCENES_SUBDIR)
+confidence waits on the status page. A download in a folder named after a studio of the library
+(Downloads/<Studio>/..., a qBittorrent subcategory such as „Порно/Wicked“) is searched in that studio's sites and,
+when found, placed under it on its own; a scene there goes under that studio with no question. A scene (the category SCENES_CATEGORY, in the download folder's SCENES_SUBDIR)
 isn't looked up: it waits there for its studio, and goes under it in „Порно - сцени“."""
 
 import json
@@ -18,7 +20,7 @@ import metadata
 import people
 from common import qbit as qbittorrent
 from common import tmdb, tpdb
-from common.jellyfin import jellyfin
+from common.jellyfin import announce, is_empty, jellyfin
 from common.media import VIDEO_EXTS
 from common.qbit import qbit, translate
 from config import (
@@ -80,18 +82,26 @@ def choose_save_path(category, subdir=""):
         return
     free, best = max(options)
     best = f"{best.rstrip('/')}/{subdir}" if subdir else best
-    current = qbit("torrents/categories").get(category)
-    if current and current.get("savePath", "").rstrip("/") == best.rstrip("/"):
-        return
-    qbit("torrents/editCategory" if current else "torrents/createCategory", category=category, savePath=best)
-    log(f"qBittorrent: {category} се сваля в {best} ({free / 1e12:.1f} TB свободни)")
+    categories = qbit("torrents/categories")
+    # Its subcategories („Порно/Wicked“) download into the studio's folder there
+    wanted = {category: best} | {
+        name: f"{best.rstrip('/')}/{name[len(category) + 1 :]}"
+        for name in categories
+        if name.startswith(category + "/")
+    }
+    for name, path in wanted.items():
+        current = categories.get(name)
+        if current and current.get("savePath", "").rstrip("/") == path.rstrip("/"):
+            continue
+        qbit("torrents/editCategory" if current else "torrents/createCategory", category=name, savePath=path)
+        log(f"qBittorrent: {name} се сваля в {path} ({free / 1e12:.1f} TB свободни)")
 
 
 def take_finished(torrents):
     """qBittorrent lets go of the category's finished torrents; their files stay for the matcher."""
     for torrent in torrents:
         if (
-            torrent["category"] not in (CATEGORY, SCENES_CATEGORY)
+            torrent["category"].split("/")[0] not in (CATEGORY, SCENES_CATEGORY)
             or torrent["progress"] < 1
             or torrent["state"] == "moving"
         ):
@@ -128,25 +138,39 @@ def runtime(video):
         return None
 
 
+def last_change(path):
+    """When a download last changed: a folder's own time doesn't move while a file in it is still being copied."""
+    stats = [os.stat(path)] + [os.stat(os.path.join(r, f)) for r, _, files in os.walk(path) for f in files]
+    return max(max(st.st_ctime, st.st_mtime) for st in stats)
+
+
 def scan(torrents):
     """Adds what is new in the download folders (not a torrent still downloading, nor a file still being copied)
     and forgets what is gone from them."""
     downloading = {translate(t["content_path"], QBIT_PATHS) for t in torrents if t["progress"] < 1}
+    known = {"movie": studios(library_locations()), "scene": studios(library_locations(SCENES_LIBRARY))}
     present = set()
-    for folder, kind in [(f, "movie") for f in downloads] + [(f, "scene") for f in scene_folders()]:
+    places: list[tuple[str, str, str | None]] = []
+    places += [(f, "movie", None) for f in downloads]
+    places += [(f, "scene", None) for f in scene_folders()]
+    for folder, kind, studio in places:
         for name in os.listdir(folder):
             path = os.path.join(folder, name)
             if name.startswith(".") or name.endswith((".part", ".!qB")) or path in downloading:
                 continue
-            if kind == "movie" and name == SCENES_SUBDIR:
+            if kind == "movie" and name == SCENES_SUBDIR and studio is None:
+                continue
+            if studio is None and os.path.isdir(path) and name in known[kind]:
+                # A studio's folder: what is in it are the downloads
+                places.append((path, kind, name))
                 continue
             present.add(path)
-            if time.time() - max(os.stat(path).st_ctime, os.stat(path).st_mtime) < SETTLE_AFTER:
+            if time.time() - last_change(path) < SETTLE_AFTER:
                 continue
             with lock:
                 db.execute(
-                    "INSERT OR IGNORE INTO incoming (path, kind, state, added_at) VALUES (?, ?, 'new', ?)",
-                    (path, kind, time.time()),
+                    "INSERT OR IGNORE INTO incoming (path, kind, studio, state, added_at) VALUES (?, ?, ?, 'new', ?)",
+                    (path, kind, studio, time.time()),
                 )
     with lock:
         for row in db.execute("SELECT id, path FROM incoming WHERE state != 'done'").fetchall():
@@ -189,11 +213,16 @@ def name_of(path):
 
 
 def scene_waits(item):
-    """A scene isn't looked up: it waits on the status page for its studio (and title)."""
+    """A scene isn't looked up: it waits on the status page for its studio (and title), or goes under the studio of
+    the folder it came in."""
     path = item["path"]
     video = main_video(path)
     if not video:
         update(item["id"], state="failed", detail="няма видео", checked_at=time.time())
+        return
+    if item["studio"]:
+        update(item["id"], video=video, checked_at=time.time())
+        place_scene(item["id"], item["studio"])
         return
     update(
         item["id"],
@@ -222,7 +251,20 @@ def identify(item):
     if pin:
         place(item["id"], pin, None)
         return
-    found, why, candidates = match.search_tpdb(title, year, minutes, [k for k in keywords if not match.pinned(k)])
+    words = [k for k in keywords if not match.pinned(k)]
+    studio = item["studio"]
+    if studio:
+        found, why, candidates = match.search_tpdb(
+            title, year, minutes, words, match.site_names(metadata.studio_name(studio))
+        )
+        if found:
+            place(item["id"], ("tpdb", found["id"]), studio)
+            return
+        # Not in the studio's sites: the whole of ThePornDB, never taken on its own against the folder's word
+        _, why_all, candidates = match.search_tpdb(title, year, minutes, words)
+        why = f"няма го в сайтовете на {studio} ({why}); " + (why_all or "в цялата база има кандидати")
+    else:
+        found, why, candidates = match.search_tpdb(title, year, minutes, words)
     if not candidates:
         candidates = match.search_tmdb(title, year)
         why = why if not candidates else "има го само в TMDB"
@@ -301,6 +343,7 @@ def place(row_id, pin, studio, title=None, at=0.25):
     if os.path.exists(folder):
         update(row_id, state="duplicate", detail=f"вече е в библиотеката: {os.path.relpath(folder, location)}")
         return
+    was_empty = is_empty(location)
     if not os.path.isdir(studio_dir):
         make_dir(studio_dir, location)
     make_dir(folder, studio_dir)
@@ -331,7 +374,7 @@ def place(row_id, pin, studio, title=None, at=0.25):
         ]
         if not rest:
             shutil.rmtree(item["path"])
-    jellyfin("/Library/Media/Updated", "POST", {"Updates": [{"Path": folder, "UpdateType": "Created"}]})
+    announce([folder], rescan=was_empty)
     update(row_id, state="done", placed=folder, detail="", candidates=[])
     people.catalog_wake.set()
     event(folder, "placed", f"{label} → {os.path.relpath(folder, location)}", label)
@@ -377,6 +420,7 @@ def place_scene(row_id, studio, title="", at=0.25):
         update(row_id, state="duplicate", detail=f"вече е в библиотеката: {where}")
         event(item["path"], "duplicate", where, label)
         return
+    was_empty = is_empty(location)
     if not os.path.isdir(studio_dir):
         make_dir(studio_dir, location)
     moved = []
@@ -399,7 +443,7 @@ def place_scene(row_id, studio, title="", at=0.25):
         return
     if os.path.isdir(item["path"]):
         shutil.rmtree(item["path"])
-    jellyfin("/Library/Media/Updated", "POST", {"Updates": [{"Path": t, "UpdateType": "Created"} for t in targets]})
+    announce(targets, rescan=was_empty)
     update(row_id, state="done", placed=studio_dir, detail=f"{len(targets)} сцени", candidates=[])
     people.catalog_wake.set()
     event(studio_dir, "placed", f"{label} → {os.path.relpath(studio_dir, location)} ({len(targets)} сцени)", label)

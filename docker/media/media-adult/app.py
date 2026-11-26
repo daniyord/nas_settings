@@ -20,7 +20,7 @@ import scenes
 from people import PERFORMER_ID, catalog, catalog_loop, people, people_loop, people_wake
 from common.jellyfin import jellyfin
 from common.web import NO_CACHE, add_page
-from config import DOWNLOAD_INTERVAL, INTERVAL, LIBRARY, PEOPLE_DIR, PORT, SCENES_LIBRARY
+from config import DOWNLOAD_INTERVAL, INTERVAL, LIBRARY, PEOPLE_DIR, PORT, SCENES_LIBRARY, SCENES_SUBDIR
 from library import studios
 from state import activity, db, downloads, libraries, lock, log, run, wake
 
@@ -175,7 +175,10 @@ def delete_download(row_id: int):
     """Deletes a download from its download folder (a duplicate, or one that isn't wanted), never from a library."""
     item = waiting_row(row_id)
     path = item["path"]
-    if os.path.dirname(path.rstrip("/")) not in {f.rstrip("/") for f in downloads + incoming.scene_folders()}:
+    inside = [
+        f for f in downloads if os.path.commonpath([f, path]) == f.rstrip("/") and path.rstrip("/") != f.rstrip("/")
+    ]
+    if not inside or os.path.basename(path) == SCENES_SUBDIR:
         raise HTTPException(400, "не е в папка за сваляне")
     if os.path.isdir(path):
         shutil.rmtree(path)

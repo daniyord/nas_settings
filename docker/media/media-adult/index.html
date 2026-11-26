@@ -202,7 +202,7 @@ function sceneRow(item, file, what) {
 
 function incomingRow(item) {
   const id = item.id;
-  const studio = studioPicker(data.studios, null, "студио от ThePornDB");
+  const studio = studioPicker(data.studios, item.studio, "студио от ThePornDB");
   const file = el("td", {}, el("div", { textContent: base(item.path) }),
     el("div", { className: "target", textContent: [item.title, item.year, item.minutes && `${item.minutes} мин`].filter(Boolean).join(" · ") }));
   const what = el("td", {}, el("div", { className: "state", textContent: STATE[item.state] || item.state }));

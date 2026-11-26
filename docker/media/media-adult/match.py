@@ -116,13 +116,19 @@ def candidate(found, score, minutes):
     }
 
 
-def search_tpdb(title, year, minutes, keywords):
-    """(movie or None, why not, candidates): ThePornDB across all of its sites."""
+def site_names(studio):
+    """ThePornDB's sites of a studio: those whose name starts with its ("Vivid" -> "Vivid", "Vivid Premium")."""
+    return sorted({s["name"] for s in tpdb.sites(studio) if same_studio(studio, s["name"]) and s.get("name")})
+
+
+def search_tpdb(title, year, minutes, keywords, sites=None):
+    """(movie or None, why not, candidates): ThePornDB within the sites given (fast), or across all of it."""
     wanted = texts(title, keywords)
     found = {}
     for query in queries(title, keywords):
-        for movie in tpdb.search(query):
-            found[movie["id"]] = movie
+        for site in sites or [None]:
+            for movie in tpdb.search(query, site=site):
+                found[movie["id"]] = movie
     scored = []
     for movie in found.values():
         site = (movie.get("site") or {}).get("name") or ""

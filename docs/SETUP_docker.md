@@ -64,10 +64,11 @@ uv run pre-commit install
   DOCKER_HOST=ssh://nas docker exec -u abc -e HOME=/config calibre-web \
     calibredb add --with-library /books --authors "..." --tags книга-игра --languages bul /path/in/container.pdf
   ```
-  Restart the container afterwards (`docker restart calibre-web`) so Calibre-Web picks up the changes.
-- Ingest folders, checked every minute by the `calibre-ingest` service (`docker/books/calibre-web/calibre-ingest`); each file is added, deleted, and Calibre-Web restarted. Files that fail to import go to a `failed` subfolder. Logs: `docker logs calibre-web`.
-  - `Common/Other/Books/Ingest` — normal books; title and author come from the book's own metadata.
+  Reload the database afterwards so Calibre-Web sees the changes: `docker exec calibre-web curl -fsS localhost:8083/reconnect` (enabled by `CALIBRE_RECONNECT`).
+- Ingest folders, checked every minute by the `calibre-ingest` service (`docker/books/calibre-web/calibre-ingest`), subfolders included; files modified in the last minute are left for the next pass. Each added file is deleted and Calibre-Web reloads its database via `/reconnect` (a restart only if that fails); emptied subfolders are removed after 5 minutes. Nothing is deleted unadded: duplicates (same title and author already in the library) go to a `duplicates` subfolder, files that fail to import to `failed`, keeping their subfolder. Logs: `docker logs calibre-web`.
+  - `Common/Other/Books/Ingest` — normal books; title and author come from the book's own metadata, except that a book with no author, "Unknown", or a junk title like "true" gets the file name as its title.
   - `Common/Other/Books/Ingest-Boardgames` — board game rulebooks; author "Настолни игри", tag "настолна игра", filename as title.
+- The library can be rebuilt from its folders (`calibredb restore_database`): every book folder has a `metadata.opf`. Calibre-Web edits only mark a book as dirty, so `calibre-ingest` runs `calibredb backup_metadata` hourly to rewrite those OPFs.
 - Back up `metadata.db` before bulk edits, and don't edit the library from Calibre desktop and Calibre-Web at the same time.
 - In the **Books list** table view, sorting by the *Authors* column shows multi-author books once per author. This is Calibre-Web behavior; the library isn't duplicated.
 

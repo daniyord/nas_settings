@@ -11,6 +11,8 @@ services:
       TZ: Etc/UTC
       # calibredb/ebook-convert for bulk imports and format conversion
       DOCKER_MODS: linuxserver/mods:universal-calibre
+      # Lets calibre-ingest reload the database via /reconnect instead of restarting Calibre-Web
+      CALIBRE_RECONNECT: "true"
     ports:
       - 8083:8083
     volumes:

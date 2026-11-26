@@ -1,44 +1,89 @@
 #!/usr/bin/with-contenv bash
 # shellcheck shell=bash
-# Adds files dropped into the ingest folders to the library. Board game rulebooks have no
-# meaningful author for Calibre to pick up, so they get a placeholder one.
+# Adds files dropped into the ingest folders (subfolders too) to the library. Duplicates and
+# failures are moved aside instead of deleted. Board game rulebooks have no meaningful author
+# for Calibre to pick up, so they get a placeholder one.
 
-shopt -s nullglob
-
-# Skips files still being copied in over SMB
-ready() {
-	[ -f "$1" ] && (($(date +%s) - $(stat -c %Y "$1") >= 60))
+# cdb <command> [args...]: calibredb on the library, as the owner of its files
+cdb() {
+	local command=$1
+	shift
+	HOME=/config s6-setuidgid abc calibredb "$command" --with-library /books "$@"
 }
 
-# add <file> [calibredb add options...]
-add() {
-	local file=$1 dir
-	shift
-	dir=$(dirname "$file")
-	if HOME=/config s6-setuidgid abc calibredb add --with-library /books "$@" "$file"; then
-		rm -f "$file"
-		added=true
-	else
-		mkdir -p "$dir/failed"
-		mv "$file" "$dir/failed/"
+# Files old enough not to be still copying in over SMB, skipping the set-aside folders
+waiting() {
+	find "$1" -mindepth 1 \( -path "$1/failed" -o -path "$1/duplicates" \) -prune \
+		-o -type f ! -name '.*' -mmin +1 -print0
+}
+
+# set_aside <file> <root> <folder>: keeps the subfolder so same-named files don't collide
+set_aside() {
+	local target="$2/$3/${1#"$2"/}"
+	mkdir -p "$(dirname "$target")"
+	mv --backup=numbered "$1" "$target"
+	echo "calibre-ingest: $3: ${1#"$2"/}"
+}
+
+# PDFs often carry junk like title "true" and no author; the file name is a better title then
+title_args() {
+	local meta title author name
+	meta=$(HOME=/config s6-setuidgid abc ebook-meta "$1" 2>/dev/null)
+	title=$(sed -n 's/^Title *: //p' <<<"$meta")
+	author=$(sed -n 's/^Author(s) *: //p' <<<"$meta")
+	name=$(basename "$1")
+	if [[ -z $author || $author == Unknown || ! $title =~ [[:alpha:]]{3} || ${title,,} =~ ^(true|false|untitled|unknown)$ ]]; then
+		printf '%s\0' --title "${name%.*}"
 	fi
 }
 
+# add <file> <root> [calibredb add options...]
+add() {
+	local file=$1 root=$2 out
+	shift 2
+	out=$(cdb add "$@" "$file" 2>&1)
+	echo "$out"
+	if [[ $out == *"already exist in the database"* ]]; then
+		set_aside "$file" "$root" duplicates
+	elif [[ $out == *"Added book ids"* ]]; then
+		rm -f "$file"
+		added=true
+	else
+		set_aside "$file" "$root" failed
+	fi
+}
+
+# Subfolders emptied by the adds; a fresh one may still be filling up
+tidy() {
+	find "$1" -mindepth 1 -depth -type d -empty -mmin +5 ! -name failed ! -name duplicates -delete
+}
+
+last_backup=0
 while true; do
 	added=false
 
-	for file in /ingest/*; do
-		ready "$file" && add "$file"
-	done
+	while IFS= read -r -d '' file; do
+		mapfile -d '' args < <(title_args "$file")
+		add "$file" /ingest "${args[@]}"
+	done < <(waiting /ingest)
+	tidy /ingest
 
-	for file in /ingest-boardgames/*; do
+	while IFS= read -r -d '' file; do
 		name=$(basename "$file")
-		ready "$file" && add "$file" --title "${name%.*}" --authors "Настолни игри" --tags "настолна игра"
-	done
+		add "$file" /ingest-boardgames --title "${name%.*}" --authors "Настолни игри" --tags "настолна игра"
+	done < <(waiting /ingest-boardgames)
+	tidy /ingest-boardgames
 
-	# Calibre-Web doesn't notice books added by calibredb until it restarts
-	if $added; then
+	# Calibre-Web doesn't notice books added by calibredb until it reloads the database
+	# (CALIBRE_RECONNECT in docker-compose.yml)
+	if $added && ! curl -fsS -o /dev/null http://localhost:8083/reconnect; then
 		s6-svc -r /run/service/svc-calibre-web
+	fi
+
+	# Edits in Calibre-Web only mark books as dirty; this writes their metadata.opf, so the
+	# library can be rebuilt from the folders alone
+	if (($(date +%s) - last_backup >= 3600)); then
+		cdb backup_metadata >/dev/null && last_backup=$(date +%s)
 	fi
 
 	sleep 60

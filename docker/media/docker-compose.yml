@@ -28,33 +28,6 @@ services:
       # in its database. media-ingest makes new ones through its API (boxsets.py)
       - /volume1/MediaMeta/Collections:/config/data/data/collections
 
-  # Replaced by media-adult (PLAN_media_services.md, stage 4); stopped, in the "old" profile so make up leaves it out,
-  # until the migration of „Порно“ is checked
-  jellyfin-tpdb-match:
-    profiles: [old]
-    build: ./jellyfin-tpdb-match
-    container_name: jellyfin-tpdb-match
-    restart: unless-stopped
-    depends_on:
-      - jellyfin
-    ports:
-      - 8097:8097
-    environment:
-      JELLYFIN_URL: http://jellyfin:8096
-      # Admin API key; the ThePornDB token is read from the plugin's own configuration
-      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/media/.env}
-      LIBRARY: Порно
-      # Studios whose ThePornDB variants ("Wicked Pictures", ...) are merged into this one name
-      MERGE_STUDIOS: Wicked
-      # Last resort when ThePornDB has nothing; empty turns TMDb off
-      TMDB_API_KEY: ${TMDB_API_KEY:-}
-    volumes:
-      # Per-file keywords entered on the status page
-      - /volume1/ServerConfigurations/JellyfinTpdbMatch:/data
-      # Same path as inside jellyfin, so item paths can be used as is; matched movies get their own folder
-      - /volume5/MoviesAdult/Porn:/moviesadult/Porn
-      - /volume6/MoviesAdult1/Porn:/moviesadult1/Porn
-
   # Brings new movies and series into the film and series libraries, and finished qBittorrent downloads into them
   media-ingest:
     build:

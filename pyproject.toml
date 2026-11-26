@@ -52,7 +52,6 @@ executionEnvironments = [
     { root = "docker/media/media-auth" },
     { root = "docker/media/common", extraPaths = ["docker/media"] },
     { root = "docker/media/jellyfin-setup", extraPaths = ["docker/media"] },
-    { root = "docker/media/jellyfin-tpdb-match" },
 ]
 exclude = [".venv"]
 # What it found in the code from before (untyped JSON read as possibly None); only new findings are reported

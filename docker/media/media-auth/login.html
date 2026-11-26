@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход</title>
+<link rel="stylesheet" href="/auth/common/page.css">
+<style>
+  form.login { display: grid; gap: 10px; max-width: 320px; }
+  form.login input { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--ink); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Вход</h1>
+  <p class="sub" style="margin-bottom:16px">С името и паролата от Jellyfin.</p>
+  <section class="card">
+    <form class="login" method="post" action="/auth/login">
+      <input type="text" name="username" placeholder="потребител" autocomplete="username" autocapitalize="none" required autofocus>
+      <input type="password" name="password" placeholder="парола" autocomplete="current-password">
+      <input type="hidden" name="next" id="next">
+      <button type="submit">Влез</button>
+      <p class="sub" id="error" style="color:var(--error, #c0392b)"></p>
+    </form>
+  </section>
+</main>
+<script>
+const params = new URLSearchParams(location.search);
+// Everything after "next=": nginx puts the address there as it was asked for, its own "&" unescaped
+const raw = location.search.split("next=").slice(1).join("next=");
+let next = raw;
+try { next = decodeURIComponent(raw); } catch (e) {}
+document.getElementById("next").value = next;
+document.getElementById("error").textContent = { wrong: "Грешно име или парола.",
+  none: "Този потребител няма достъп до тези страници." }[params.get("error")] || "";
+</script>
+</body>
+</html>

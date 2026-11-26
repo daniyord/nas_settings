@@ -30,7 +30,7 @@ DisabledImageFetchers = ["TheMovieDb"]
 # Plugins switched off (not uninstalled); a restart of Jellyfin makes it take effect. The bundled ones (TMDb, OMDb,
 # ...) can't be: OMDb is simply in no library's fetchers
 [plugins]
-disabled = []
+disabled = ["ThePornDB"]
 
 # Scheduled tasks that would go online on their own (by Key): left without triggers, still there to run by hand
 [tasks]
@@ -438,22 +438,23 @@ type = "movies"
 paths = ["/moviesadult/Porn", "/moviesadult1/Porn"]
 [library.options]
 EnableAutomaticSeriesGrouping = true
-EnableInternetProviders = true
+EnableInternetProviders = false
 EnableLUFSScan = false
 EnablePhotos = true
 EnableRealtimeMonitor = true
 LocalMetadataReaderOrder = ["Nfo"]
 MetadataCountryCode = "BG"
-MetadataSavers = ["Nfo"]
+MetadataSavers = []
 PreferredMetadataLanguage = "bg"
-SaveLocalMetadata = true
+SaveLocalMetadata = false
 SkipSubtitlesIfAudioTrackMatches = true
 SubtitleDownloadLanguages = []
+# Offline since 2026-11-25 (stage 4): media-adult writes the NFOs and images from ThePornDB
 [[library.options.TypeOptions]]
 Type = "Movie"
-MetadataFetchers = ["ThePornDB Movies"]
+MetadataFetchers = []
 MetadataFetcherOrder = ["TheMovieDb", "The Open Movie Database", "ThePornDB JAV", "ThePornDB Scenes", "ThePornDB Movies"]
-ImageFetchers = ["ThePornDB", "Embedded Image Extractor", "Screen Grabber"]
+ImageFetchers = ["Embedded Image Extractor", "Screen Grabber"]
 ImageFetcherOrder = ["TheMovieDb", "The Open Movie Database", "ThePornDB", "Embedded Image Extractor", "Screen Grabber"]
 ImageOptions = []
 SimilarItemProviders = []
@@ -471,11 +472,12 @@ EnablePhotos = false
 EnableRealtimeMonitor = true
 LocalMetadataReaderOrder = ["Nfo"]
 MetadataCountryCode = ""
-MetadataSavers = ["Nfo"]
+MetadataSavers = []
 PreferredMetadataLanguage = ""
-SaveLocalMetadata = true
+SaveLocalMetadata = false
 SkipSubtitlesIfAudioTrackMatches = true
 SubtitleDownloadLanguages = []
+# Offline since 2026-11-26 (stage 4): media-adult writes each scene's NFO and poster
 [[library.options.TypeOptions]]
 Type = "Video"
 MetadataFetchers = []

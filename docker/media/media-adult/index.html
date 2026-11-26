@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Порно</title>
+<link rel="stylesheet" href="common/page.css">
+<style>
+  .cands { display: grid; gap: 8px; }
+  .cand { display: grid; grid-template-columns: 56px 1fr auto; gap: 10px; align-items: center; }
+  .cand img, .cand .none { width: 56px; height: 80px; object-fit: cover; border-radius: 4px; background: var(--grid); }
+  .cand .meta { color: var(--ink-2); font-size: 13px; }
+  select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; }
+  .hand img { display: block; width: 160px; margin-top: 8px; border-radius: 4px; }
+  input[type=range] { flex: 0 1 12em; }
+</style>
+</head>
+<body>
+<main>
+  <nav class="bar" id="bar"></nav>
+  <h1>Jellyfin: порно</h1>
+  <p class="sub" id="error" style="margin-bottom:20px"></p>
+
+  <section class="card">
+    <h2>Входящи</h2>
+    <p class="sub" id="downloads" style="margin-bottom:12px"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Изтеглено</th><th>Какво е</th></tr></thead>
+        <tbody id="incoming"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Библиотеки</h2>
+    <p class="sub" id="pass" style="margin-bottom:12px"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Библиотека</th><th>Студио</th><th>Видеа</th></tr></thead>
+        <tbody id="libraries"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Изпълнители</h2>
+    <div class="runbar">
+      <p class="sub" id="people">Зареждане…</p>
+      <button type="button" id="people-now">Обнови сега</button>
+    </div>
+    <p><a href="performers">Каталог на изпълнителите →</a></p>
+    <details>
+      <summary>Без снимка в ThePornDB <span class="sub" id="no-photo-count"></span></summary>
+      <p id="no-photo"></p>
+    </details>
+    <details>
+      <summary>Филми без изпълнители <span class="sub" id="empty-count"></span></summary>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Заглавие</th><th>Студио</th></tr></thead>
+          <tbody id="empty"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <details class="card">
+    <summary><h2>Подредени</h2> <span class="sub" id="done-count"></span></summary>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Изтеглено</th><th>Папка в библиотеката</th><th>Кога</th></tr></thead>
+        <tbody id="done"></tbody>
+      </table>
+    </div>
+  </details>
+
+  <section class="card">
+    <h2>В момента</h2>
+    <p class="now idle" id="now"></p>
+    <ol class="log short" id="log"><li class="empty">Още няма събития от последния старт на услугата.</li></ol>
+  </section>
+</main>
+<script src="common/page.js"></script>
+<script>
+let data = {};
+// Only an administrator changes anything here (media-auth); anyone else sees the page without its controls
+let canEdit = false;
+whoami.then(user => {
+  canEdit = Boolean(user && user.admin);
+  document.getElementById("people-now").hidden = !canEdit;
+  renderIncoming();
+});
+
+function fill(id, rows, empty, cols = 3) {
+  document.getElementById(id).replaceChildren(...(rows.length ? rows
+    : [el("tr", {}, el("td", { colSpan: cols, className: "empty", textContent: empty }))]));
+}
+
+function renderLibraries() {
+  const rows = [];
+  for (const library of data.libraries || []) {
+    const studios = Object.entries(library.studios);
+    const total = studios.reduce((sum, [, count]) => sum + count, 0);
+    rows.push(el("tr", {}, el("td", { textContent: library.name }), el("td", { textContent: `${studios.length} студиа` }),
+      el("td", { textContent: total })));
+    for (const [studio, count] of studios) {
+      rows.push(el("tr", {}, el("td"), el("td", { textContent: studio }), el("td", { textContent: count })));
+    }
+  }
+  fill("libraries", rows, "Още не е минало през библиотеките.");
+  const run = data.run || {};
+  document.getElementById("pass").textContent = run.finished ? `Последно минаване: ${fmtTime(run.finished)}` : "";
+}
+
+const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
+
+async function renderPeople() {
+  const p = data.people || {};
+  document.getElementById("people").textContent = p.finished
+    ? `${p.performers} изпълнители в NFO файловете, ${p.photos} със снимка, ${p.no_photo} без снимка в ThePornDB; снимките са обновени ${fmtTime(p.finished)}, отново след седмица.`
+    : "Снимките още се обновяват…";
+  let res;
+  try { res = await (await fetch("api/performers")).json(); } catch (e) { return; }
+  document.getElementById("no-photo-count").textContent = res.no_photo.length;
+  document.getElementById("no-photo").replaceChildren(...res.no_photo.flatMap(([name, id], i) => [i ? ", " : "",
+    el("a", { href: `https://theporndb.net/performers/${id.slice(5)}`, target: "_blank", rel: "noopener", textContent: name })]));
+  document.getElementById("empty-count").textContent = res.empty.length;
+  fill("empty", res.empty.map(t => el("tr", {},
+    el("td", {}, t.item ? el("a", { href: jellyfinLink(t.item), target: "_blank", rel: "noopener", textContent: t.title }) : t.title),
+    el("td", { textContent: t.studio }))), res.built ? "Няма." : "Списъкът се събира…", 2);
+}
+
+document.getElementById("people-now").onclick = async () => {
+  await fetch("api/people/run", { method: "POST" });
+  document.getElementById("people").textContent = "Обновява се…";
+};
+
+const STATE = { new: "чака търсене", doubt: "чака теб", duplicate: "вече го има", failed: "грешка" };
+const base = path => path.split("/").pop();
+
+async function call(url, method, body) {
+  const options = { method };
+  if (body !== undefined) Object.assign(options, { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const res = await fetch(url, options);
+  if (!res.ok) alert((await res.json()).detail || res.status);
+  refresh();
+  renderBar();
+}
+
+function button(label, onclick) {
+  const b = el("button", { type: "button", textContent: label });
+  b.onclick = async () => { b.disabled = true; try { await onclick(); } finally { b.disabled = false; } };
+  return b;
+}
+
+// The studio a pick goes under: one of the library's, or a new one typed in
+function studioPicker(studios, suggested, none) {
+  const select = el("select", {}, el("option", { value: "", textContent: none }),
+    ...studios.map(s => el("option", { value: s, textContent: s, selected: s === suggested })),
+    el("option", { value: "*", textContent: "ново…" }));
+  const other = el("input", { type: "text", placeholder: "име на новото студио", hidden: true });
+  select.onchange = () => { other.hidden = select.value !== "*"; };
+  return { nodes: [select, other], value: () => select.value === "*" ? other.value.trim() : select.value };
+}
+
+// Release names of scenes start with their site ("Brazzers.23.05.12.Title...")
+const norm = text => text.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
+
+// The poster with the title, over the frame of the video at the moment picked
+function posterControls(id, studio, title) {
+  const at = el("input", { type: "range", min: 5, max: 95, value: 25, title: "кадър от видеото" });
+  const preview = el("img", { alt: "", hidden: true });
+  const show = () => {
+    const s = studio.value();
+    if (!title.value.trim() || !s) { alert("заглавие и студио"); return; }
+    preview.src = `api/incoming/${id}/poster?` + new URLSearchParams({ title: title.value, studio: s, at: at.value / 100 });
+    preview.hidden = false;
+  };
+  return { at, preview, show };
+}
+
+function deleteButton(item) {
+  return el("div", { className: "actions" }, button("Изтрий изтеглянето", () =>
+    confirm(`Да изтрия ли ${base(item.path)} от папката за сваляне?`) && call(`api/incoming/${item.id}`, "DELETE")));
+}
+
+function sceneRow(item, file, what) {
+  const id = item.id;
+  const studios = data.scene_studios || [];
+  const suggested = studios.filter(s => norm(base(item.path)).startsWith(norm(s))).sort((a, b) => b.length - a.length)[0];
+  const studio = studioPicker(studios, suggested, "избери студио");
+  const title = el("input", { type: "text", placeholder: "заглавие; празно: по името на всеки файл", value: item.title || "" });
+  const p = posterControls(id, studio, title);
+  what.append(el("div", { className: "actions" }, ...studio.nodes),
+    el("div", { className: "actions hand" }, title, p.at, button("Постер", p.show),
+      button("Сложи", () => call(`api/incoming/${id}/scene`, "POST", { title: title.value, studio: studio.value(), at: p.at.value / 100 }))),
+    el("div", { className: "hand" }, p.preview), deleteButton(item));
+  return el("tr", {}, file, what);
+}
+
+function incomingRow(item) {
+  const id = item.id;
+  const studio = studioPicker(data.studios, null, "студио от ThePornDB");
+  const file = el("td", {}, el("div", { textContent: base(item.path) }),
+    el("div", { className: "target", textContent: [item.title, item.year, item.minutes && `${item.minutes} мин`].filter(Boolean).join(" · ") }));
+  const what = el("td", {}, el("div", { className: "state", textContent: STATE[item.state] || item.state }));
+  if (item.detail) what.append(el("div", { className: "target", textContent: item.detail }));
+  if (item.state === "new" || !canEdit) return el("tr", {}, file, what);
+  if (item.kind === "scene") return sceneRow(item, file, what);
+
+  if (item.candidates.length) {
+    what.append(el("div", { className: "cands" }, ...item.candidates.map(c => el("div", { className: "cand" },
+      c.cover ? el("img", { src: c.cover, alt: "", loading: "lazy" }) : el("span", { className: "none" }),
+      el("div", {}, el("a", { href: c.link, target: "_blank", rel: "noopener", textContent: c.title }),
+        el("div", { className: "meta", textContent: [c.site, c.year, c.minutes && `${c.minutes} мин`, `сходство ${c.similarity}`].filter(Boolean).join(" · ") })),
+      button("Това е", () => call(`api/incoming/${id}/choose`, "POST", { source: c.source, id: c.id, studio: studio.value() }))))));
+  }
+  const link = el("input", { type: "text", placeholder: "линк към ThePornDB или TMDB" });
+  const words = el("input", { type: "text", placeholder: "други заглавия, със запетая", value: item.keywords.join(", ") });
+  what.append(
+    el("div", { className: "actions" }, ...studio.nodes),
+    el("div", { className: "actions" }, link, button("Избери", () => call(`api/incoming/${id}/choose`, "POST", { link: link.value, studio: studio.value() }))),
+    el("div", { className: "actions" }, words, button("Търси отново", () => call(`api/incoming/${id}/keywords`, "POST", { keywords: words.value.split(",") }))));
+
+  // A movie no database knows: its title and the moment of the video its poster is made from
+  const title = el("input", { type: "text", placeholder: "заглавие, ако никоя база не го знае", value: item.title || "" });
+  const p = posterControls(id, studio, title);
+  what.append(el("div", { className: "actions hand" }, title, p.at, button("Постер", p.show),
+    button("На ръка", () => call(`api/incoming/${id}/by-hand`, "POST", { title: title.value, studio: studio.value(), at: p.at.value / 100 }))),
+    el("div", { className: "hand" }, p.preview), deleteButton(item));
+  return el("tr", {}, file, what);
+}
+
+function renderIncoming() {
+  const items = data.incoming || [];
+  const open = items.filter(i => i.state !== "done"), done = items.filter(i => i.state === "done");
+  fill("incoming", open.map(incomingRow), "Няма нищо за подреждане.", 2);
+  fill("done", done.map(i => el("tr", {}, el("td", { textContent: base(i.path) }), el("td", { textContent: i.placed }),
+    el("td", { className: "time", textContent: fmtTime(i.checked_at || i.added_at) }))), "Още нищо.");
+  document.getElementById("done-count").textContent = done.length ? `${done.length}` : "";
+  document.getElementById("downloads").textContent = (data.downloads || []).length
+    ? `Папки за сваляне: ${data.downloads.join(", ")} (сцените в подпапка „Сцени“)` : "Няма папка за сваляне.";
+}
+
+async function refresh() {
+  const error = document.getElementById("error");
+  try {
+    data = await (await fetch("api/status")).json();
+    error.textContent = "";
+  } catch (e) {
+    error.textContent = `Няма връзка със сървъра: ${e}`;
+    return;
+  }
+  // An answer half typed isn't wiped by the refresh
+  if (!document.activeElement || !document.getElementById("incoming").contains(document.activeElement)) renderIncoming();
+  renderLibraries();
+  renderPeople();
+}
+
+const LOG_KIND = { error: ["Грешка", "error"], doubt: ["Чака теб", "review"], duplicate: ["Вече го има", null],
+  placed: ["Подреден", "moved"], people: ["Изпълнители", null], scene: ["Сцена", null], deleted: ["Изтрито", null], qBittorrent: ["qBittorrent", null] };
+
+liveLog({
+  kinds: LOG_KIND,
+  now(res) {
+    const run = res.run || {};
+    const now = document.getElementById("now");
+    now.className = run.current ? "now" : "now idle";
+    now.replaceChildren(...(run.current ? [el("span", { className: "dot" }), run.current] : ["Чака."]));
+    return Boolean(run.current);
+  },
+  onLines() { refresh(); },
+});
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

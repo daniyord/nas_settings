@@ -1,5 +1,6 @@
 """The actors' photos: one per actor in PEOPLE_DIR, <tmdb-id>.jpg, which our NFOs point to. The NFOs are the list of
 who is needed (each actor carries its TMDB id), so a lost folder is rebuilt from them; photos no NFO points to go.
+The performers' tpdb-<id>.jpg in the same folder are media-adult's.
 Names entered on the status page for actors TMDB has only in Latin are kept there too (names.json) and put into
 every NFO that names those actors."""
 
@@ -12,7 +13,7 @@ import xml.etree.ElementTree as ET
 from common import nfo, tmdb
 from common.jellyfin import jellyfin, library_locations, reread
 from metadata import confirmed_names
-from config import LIBRARIES, PEOPLE_DIR, SERIES_LIBRARIES
+from config import ADULT_LIBRARIES, LIBRARIES, PEOPLE_DIR, SERIES_LIBRARIES
 from state import db, event, lock, log
 
 WEEK = 7 * 86400
@@ -68,7 +69,8 @@ def update_photos(ids, people_dir):
 
 def run():
     folders = {f["Name"]: f for f in jellyfin("/Library/VirtualFolders")}
-    locations = library_locations(folders, LIBRARIES + SERIES_LIBRARIES)
+    # media-adult's NFOs too: a movie it found on TMDB names TMDB actors, whose photos are kept here
+    locations = library_locations(folders, LIBRARIES + SERIES_LIBRARIES + ADULT_LIBRARIES)
     missing = [loc for loc in locations if not os.path.isdir(loc)]
     if missing:
         # Without every library the list is short, and the photos of the missing ones would be deleted

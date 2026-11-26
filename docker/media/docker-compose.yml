@@ -28,7 +28,10 @@ services:
       # in its database. media-ingest makes new ones through its API (boxsets.py)
       - /volume1/MediaMeta/Collections:/config/data/data/collections
 
+  # Replaced by media-adult (PLAN_media_services.md, stage 4); stopped, in the "old" profile so make up leaves it out,
+  # until the migration of „Порно“ is checked
   jellyfin-tpdb-match:
+    profiles: [old]
     build: ./jellyfin-tpdb-match
     container_name: jellyfin-tpdb-match
     restart: unless-stopped
@@ -69,6 +72,8 @@ services:
       # Release folders (a season in the name, or downloaded through qBittorrent) are organized; the rest are left alone
       SERIES_LIBRARIES: Сериали,Сериали - детски,Сериали - български,Сериали - руски
       # Libraries whose folders from before our NFOs are brought to them (PLAN_media_services.md, stage 3); one at a time
+      # media-adult's, read only for the TMDB actors their NFOs name, whose photos are kept with the rest
+      ADULT_LIBRARIES: Порно,Порно - сцени
       MIGRATE_LIBRARIES: Филми - руски,Филми - български,Филми,Сериали - български,Филми - детски,Сериали - детски,Сериали,Еротика,Сериали - руски
       # A finished torrent whose category is one of LIBRARIES or SERIES_LIBRARIES is moved into it; the category is kept
       # pointed at whichever of DOWNLOAD_DIRS (qBittorrent's paths) has the most free space
@@ -85,6 +90,10 @@ services:
       - /volume2/Movies2:/movies2
       - /volume3/Movies3:/movies3
       - /volume5/MoviesAdult/Erotic:/moviesadult/Erotic
+      - /volume5/MoviesAdult/Porn:/moviesadult/Porn:ro
+      - /volume5/MoviesAdult/PornScenes:/moviesadult/PornScenes:ro
+      - /volume6/MoviesAdult1/Porn:/moviesadult1/Porn:ro
+      - /volume6/MoviesAdult1/PornScenes:/moviesadult1/PornScenes:ro
       - /volume1/MediaMeta/People:/people
       - /volume1/MediaMeta/Collections:/collections
       # What each user watched, exported nightly (userdata.py)
@@ -116,15 +125,61 @@ services:
       - /volume3/Movies3:/movies3
       - /volume5/MoviesAdult/Erotic:/moviesadult/Erotic
 
-  # The only address of the status pages of media-ingest (/ingest/) and media-subtitles (/subtitles/), which publish
-  # no port of their own
+  # The adult libraries, „Порно“ and „Порно - сцени“: NFOs and artwork from ThePornDB (PLAN_media_services.md, stage 4)
+  media-adult:
+    build:
+      context: .
+      dockerfile: media-adult/Dockerfile
+    container_name: media-adult
+    restart: unless-stopped
+    depends_on:
+      - jellyfin
+    environment:
+      JELLYFIN_URL: http://jellyfin:8096
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:?set JELLYFIN_API_KEY in docker/media/.env}
+      TPDB_API_TOKEN: ${TPDB_API_TOKEN:?set TPDB_API_TOKEN in docker/media/.env}
+      # Last resort when ThePornDB has nothing
+      TMDB_API_KEY: ${TMDB_API_KEY:?set TMDB_API_KEY in docker/media/.env}
+      # Finished torrents in the category „Порно“ are matched in qBittorrent's download folder on an adult disk and
+      # moved from there into the library on the same disk; the category is kept pointed at the one with the most
+      # free space
+      QBIT_URL: http://host.docker.internal:8888
+      DOWNLOAD_DIRS: /volume5/MoviesAdult/Downloads,/volume6/MoviesAdult1/Downloads
+      QBIT_PATHS: /volume5/MoviesAdult=/moviesadult,/volume6/MoviesAdult1=/moviesadult1
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - /volume1/ServerConfigurations/MediaAdult:/data
+      # The whole adult disks at the same paths as inside jellyfin, so item paths can be used as is and a download
+      # moves into the library with a rename
+      - /volume5/MoviesAdult:/moviesadult
+      - /volume6/MoviesAdult1:/moviesadult1
+      # The performers' photos, tpdb-<id>.jpg, next to the actors' that media-ingest keeps
+      - /volume1/MediaMeta/People:/people
+
+  # The only address of the status pages of media-ingest (/ingest/), media-subtitles (/subtitles/) and media-adult
+  # (/adult/), which publish no port of their own
+  # Who may open the status pages: Jellyfin's users sign in, nginx in media-web asks it before every request
+  media-auth:
+    build:
+      context: .
+      dockerfile: media-auth/Dockerfile
+    container_name: media-auth
+    restart: unless-stopped
+    depends_on:
+      - jellyfin
+    environment:
+      JELLYFIN_URL: http://jellyfin:8096
+
   media-web:
     build: ./media-web
     container_name: media-web
     restart: unless-stopped
     depends_on:
+      - media-auth
       - media-ingest
       - media-subtitles
+      - media-adult
     ports:
       - 8090:8090
 
@@ -149,6 +204,9 @@ services:
       - /volume1/Downloads:/downloads
       - /volume2/Movies2/Downloads:/volume2/Movies2/Downloads
       - /volume3/Movies3/Downloads:/volume3/Movies3/Downloads
+      # The adult disks' download folders, for media-adult
+      - /volume5/MoviesAdult/Downloads:/volume5/MoviesAdult/Downloads
+      - /volume6/MoviesAdult1/Downloads:/volume6/MoviesAdult1/Downloads
 
   # Tracker search; a grab goes to qbittorrent (host network, WebUI :8888), configured as a download client
   # in Prowlarr itself: category Филми for Movies, Сериали for TV, none (left alone by the ingest) for the rest

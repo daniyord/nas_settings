@@ -1,11 +1,13 @@
-// Shared by the status pages of media-ingest and media-subtitles: small helpers, the top bar linking the two
-// pages with what waits for the user on each, and the live log.
+// Shared by the status pages of media-ingest, media-subtitles and media-adult: small helpers, the top bar linking
+// the pages with what waits for the user on each, and the live log.
 
 // The pages under media-web (docker/media/media-web/nginx.conf); summary: where the count of what waits comes from
 const SERVICES = [
   { name: "Подреждане", url: "/ingest/", summary: "/ingest/api/summary" },
   { name: "Актьори", url: "/ingest/people" },
   { name: "Субтитри и аудио", url: "/subtitles/", summary: "/subtitles/api/summary" },
+  { name: "Порно", url: "/adult/", summary: "/adult/api/summary" },
+  { name: "Изпълнители", url: "/adult/performers" },
 ];
 
 const el = (tag, props = {}, ...children) => {
@@ -20,8 +22,14 @@ const swatch = key => {
 };
 const fmtTime = ts => ts ? new Date(ts * 1000).toLocaleString("bg-BG", { dateStyle: "short", timeStyle: "short" }) : "—";
 
+// Who is signed in (media-auth): {name, admin, adult}, null when the answer is missing. An administrator sees every
+// page; one who sees the porn library only the adult pages, without changing anything
+const whoami = fetch("/auth/me").then(res => res.ok ? res.json() : null).catch(() => null);
+
 async function renderBar() {
-  const links = await Promise.all(SERVICES.map(async s => {
+  const user = await whoami;
+  const visible = SERVICES.filter(s => !user || user.admin || s.url.startsWith("/adult/"));
+  const links = await Promise.all(visible.map(async s => {
     const here = location.pathname === s.url;
     let waiting = 0;
     if (s.summary) {
@@ -35,6 +43,11 @@ async function renderBar() {
     else if (waiting) link.append(" ", el("span", { className: "count", textContent: waiting, title: "чакат теб" }));
     return link;
   }));
+  if (user) {
+    const out = el("form", { method: "post", action: "/auth/logout", className: "signout" },
+      el("button", { type: "submit", textContent: "Изход" }));
+    links.push(el("span", { className: "user", textContent: user.name }), out);
+  }
   document.getElementById("bar").replaceChildren(...links);
 }
 

@@ -3,62 +3,23 @@ same disk (a rename, never a copy) and dropped from qBittorrent, which is where 
 over. That category is kept pointed at the download folder on the library's disk with the most free space; a
 downloading episode of a series that's already organized is moved to the download folder on that series' disk."""
 
-import http.cookiejar
-import json
 import os
 import shutil
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-from typing import Any
 
 from common.jellyfin import jellyfin
 from common.media import ORGANIZED
+from common.qbit import qbit, translate
 from config import (
     DOWNLOAD_DIRS,
     DOWNLOAD_INTERVAL,
     LIBRARIES,
-    QBIT_PASSWORD,
     QBIT_PATHS,
-    QBIT_URL,
-    QBIT_USER,
     SERIES_LIBRARIES,
     VOLUME_PATHS,
 )
 from names import norm, series_title
 from state import event, failed_downloads, followed, log, wake
-
-qbit_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-
-
-def translate(path, pairs):
-    for src, dst in pairs:
-        src = src.rstrip("/")
-        if path == src or path.startswith(src + "/"):
-            return dst.rstrip("/") + path[len(src) :]
-    return None
-
-
-def qbit(path, **form) -> Any:
-    """The decoded JSON of the answer, or its text; logs in again once when the session has expired."""
-    data = urllib.parse.urlencode(form).encode() if form else None
-    headers = {"Referer": QBIT_URL}
-    for attempt in (0, 1):
-        try:
-            with qbit_opener.open(
-                urllib.request.Request(QBIT_URL + "/api/v2/" + path, data, headers), timeout=30
-            ) as response:
-                raw = response.read()
-            return json.loads(raw) if raw[:1] in (b"[", b"{") else raw.decode()
-        except urllib.error.HTTPError as e:
-            if e.code != 403 or attempt:
-                raise
-            login = urllib.parse.urlencode({"username": QBIT_USER, "password": QBIT_PASSWORD}).encode()
-            request = urllib.request.Request(QBIT_URL + "/api/v2/auth/login", login, headers)
-            with qbit_opener.open(request, timeout=30) as response:
-                if response.read().strip() != b"Ok.":
-                    raise RuntimeError("qBittorrent rejected QBIT_USER / QBIT_PASSWORD") from None
 
 
 def library_devices(library):

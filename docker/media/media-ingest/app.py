@@ -13,10 +13,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from common import nfo, tmdb
+from common import nfo, qbit, tmdb
 from common.jellyfin import jellyfin, reread
 from common.web import NO_CACHE, add_page
-from config import INTERVAL, LIBRARIES, PEOPLE_DIR, PORT, QBIT_URL, SERIES_LIBRARIES, STALE_RESCAN
+from config import INTERVAL, LIBRARIES, PEOPLE_DIR, PORT, SERIES_LIBRARIES, STALE_RESCAN
 from boxsets import boxsets_loop
 from downloads import download_loop
 from metadata import as_item, details, from_link, own
@@ -356,6 +356,6 @@ if __name__ == "__main__":
     threading.Thread(target=migrate_loop, daemon=True).start()
     threading.Thread(target=cast_loop, daemon=True).start()
     threading.Thread(target=export_loop, args=(log, event), daemon=True).start()
-    if QBIT_URL:
+    if qbit.URL:
         threading.Thread(target=download_loop, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")

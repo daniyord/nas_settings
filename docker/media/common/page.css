@@ -50,6 +50,9 @@ main { max-width: 1200px; margin: 0 auto; padding: 0 16px 48px; }
 .bar .count { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 10px; background: var(--review); color: #fff;
   font-size: 12px; font-weight: 600; text-align: center; }
 .bar .count.off { background: var(--pending); color: var(--ink); }
+.bar .user { margin-left: auto; padding: 10px 4px 8px; color: var(--muted); }
+.bar .signout { display: flex; align-items: center; }
+.bar .signout button { padding: 4px 10px; }
 h1 { font-size: 20px; margin: 0 0 4px; }
 h2 { font-size: 15px; margin: 0 0 12px; }
 .sub { color: var(--ink-2); margin: 0; }

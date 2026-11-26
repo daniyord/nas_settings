@@ -1,26 +1,23 @@
 import os
 import re
 
+from common.qbit import path_map
+
 
 def names(text):
     return [s.strip() for s in text.split(",") if s.strip()]
 
 
-def path_map(text):
-    return [tuple(p.strip().split("=", 1)) for p in text.split(",") if "=" in p]
-
-
 LIBRARIES = names(os.environ.get("LIBRARIES", "Филми,Филми - детски,Филми - български,Филми - руски"))
 # Only series in a release folder (its name has a season in it) are organized; the rest are left alone
 SERIES_LIBRARIES = names(os.environ.get("SERIES_LIBRARIES", "Сериали,Сериали - детски,Сериали - български"))
+# media-adult's libraries, read only for the TMDB actors their NFOs name (people.py)
+ADULT_LIBRARIES = names(os.environ.get("ADULT_LIBRARIES", ""))
 INTERVAL = int(os.environ.get("INTERVAL", "300"))
 PORT = int(os.environ.get("PORT", "8098"))
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 # Finished torrents whose qBittorrent category is the name of one of LIBRARIES or SERIES_LIBRARIES are moved
-# into it; empty turns this off
-QBIT_URL = os.environ.get("QBIT_URL", "").rstrip("/")
-QBIT_USER = os.environ.get("QBIT_USER", "")
-QBIT_PASSWORD = os.environ.get("QBIT_PASSWORD", "")
+# into it; QBIT_URL (common/qbit.py) empty turns this off
 DOWNLOAD_INTERVAL = int(os.environ.get("DOWNLOAD_INTERVAL", "60"))
 # qBittorrent's paths as seen here, e.g. /downloads=/volume1/Downloads
 QBIT_PATHS = path_map(os.environ.get("QBIT_PATHS", ""))

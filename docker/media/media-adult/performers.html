@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Изпълнители</title>
+<link rel="stylesheet" href="common/page.css">
+<style>
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; }
+</style>
+</head>
+<body>
+<main>
+  <nav class="bar" id="bar"></nav>
+  <h1>Изпълнители</h1>
+  <div class="runbar">
+    <p class="sub" id="info">Зареждане…</p>
+    <input type="text" id="search" placeholder="Търси по име" autocomplete="off">
+  </div>
+  <div class="filters">
+    <select id="studio"><option value="">всички студиа</option></select>
+    <select id="sort"><option value="count">по брой филми</option><option value="name">по име</option></select>
+    <label><input type="checkbox" id="no-photo"> само без снимка</label>
+  </div>
+
+  <section class="card" id="performer" hidden></section>
+
+  <div class="people" id="people"></div>
+  <button type="button" class="more" id="more" hidden>Покажи още</button>
+</main>
+
+<script src="common/page.js"></script>
+<script>
+const PAGE = 120;
+const jellyfinLink = id => `${location.protocol}//${location.hostname}:8096/web/#/details?id=${id}`;
+let performers = [], shown = PAGE;
+const fold = text => text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9а-я]+/g, " ");
+
+function photo(id, has, name) {
+  if (!has) return el("span", { className: "photo none", textContent: name.slice(0, 1) });
+  return el("img", { className: "photo", src: `api/performers/${encodeURIComponent(id)}/photo`, alt: "", loading: "lazy" });
+}
+
+function matching() {
+  const q = fold(document.getElementById("search").value).trim();
+  const studio = document.getElementById("studio").value;
+  const noPhoto = document.getElementById("no-photo").checked;
+  let found = performers.filter(p => (!q || p.folded.includes(q)) && (!studio || p.studios.includes(studio)) && (!noPhoto || !p.photo));
+  if (document.getElementById("sort").value === "name") found = [...found].sort((a, b) => a.name.localeCompare(b.name));
+  return found;
+}
+
+function render() {
+  const found = matching();
+  const cards = found.slice(0, shown).map(p => {
+    const card = el("button", { type: "button", className: "person" },
+      photo(p.id, p.photo, p.name),
+      el("span", { className: "name", textContent: p.name }),
+      el("span", { className: "n", textContent: p.count === 1 ? "1 филм" : `${p.count} филма` }));
+    card.addEventListener("click", () => openPerformer(p.id));
+    return card;
+  });
+  const list = document.getElementById("people");
+  list.replaceChildren(...cards);
+  if (!found.length) list.append(el("p", { className: "empty", textContent: "Няма такъв изпълнител." }));
+  const more = document.getElementById("more");
+  more.hidden = found.length <= shown;
+  more.textContent = `Покажи още (${found.length - shown})`;
+}
+
+async function openPerformer(id) {
+  const box = document.getElementById("performer");
+  let p;
+  try {
+    p = await (await fetch(`api/performers/${encodeURIComponent(id)}`)).json();
+  } catch (e) { return; }
+  if (!p.titles) return;
+  const summary = performers.find(x => x.id === id);
+  const link = id.startsWith("tpdb-")
+    ? el("a", { href: `https://theporndb.net/performers/${id.slice(5)}`, target: "_blank", rel: "noopener", textContent: "ThePornDB" })
+    : el("a", { href: `https://www.themoviedb.org/person/${id}`, target: "_blank", rel: "noopener", textContent: "TMDB" });
+  const rows = p.titles.map(t => {
+    const title = t.item ? el("a", { href: jellyfinLink(t.item), target: "_blank", rel: "noopener", textContent: t.title })
+      : document.createTextNode(t.title);
+    return el("tr", {}, el("td", {}, title), el("td", { className: "time", textContent: t.year || "—" }),
+      el("td", { textContent: t.studio }), el("td", { textContent: t.library }));
+  });
+  box.replaceChildren(el("div", { className: "actor" },
+    photo(id, summary ? summary.photo : true, p.name),
+    el("div", {},
+      el("h2", { textContent: p.name }),
+      el("p", { className: "sub" }, link),
+      el("div", { className: "table-wrap" }, el("table", {},
+        el("thead", {}, el("tr", {}, ...["Заглавие", "Година", "Студио", "Библиотека"].map(h => el("th", { textContent: h })))),
+        el("tbody", {}, ...rows))))));
+  box.hidden = false;
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function load() {
+  let res;
+  try {
+    res = await (await fetch("api/performers")).json();
+  } catch (e) {
+    document.getElementById("info").textContent = "Услугата не отговаря.";
+    setTimeout(load, 5000);
+    return;
+  }
+  if (res.built === null) {
+    document.getElementById("info").textContent = "Списъкът се събира от NFO файловете…";
+    setTimeout(load, 3000);
+    return;
+  }
+  performers = res.performers.map(([id, name, count, has, studios]) =>
+    ({ id, name, count, photo: has, studios, folded: fold(name) }));
+  const studios = [...new Set(performers.flatMap(p => p.studios))].sort((a, b) => a.localeCompare(b));
+  document.getElementById("studio").replaceChildren(el("option", { value: "", textContent: "всички студиа" }),
+    ...studios.map(s => el("option", { value: s, textContent: s })));
+  document.getElementById("info").textContent =
+    `${performers.length} изпълнители в NFO файловете на „Порно“ и „Порно - сцени“; списъкът е от ${fmtTime(res.built)}.`;
+  render();
+}
+
+for (const id of ["search", "studio", "sort", "no-photo"]) {
+  document.getElementById(id).addEventListener(id === "search" ? "input" : "change", () => { shown = PAGE; render(); });
+}
+document.getElementById("more").addEventListener("click", () => { shown += PAGE; render(); });
+renderBar();
+load();
+</script>
+</body>
+</html>
